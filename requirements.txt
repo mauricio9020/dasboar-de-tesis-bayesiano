@@ -1,0 +1,17 @@
+streamlit
+pandas
+geopandas
+numpy
+folium
+streamlit-folium
+plotly
+scipy
+shapely
+arviz
+matplotlib
+seaborn
+libpysal
+esda
+statsmodels
+python-docx
+openpyxl
