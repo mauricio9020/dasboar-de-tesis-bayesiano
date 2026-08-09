@@ -15,3 +15,5 @@ esda
 statsmodels
 python-docx
 openpyxl
+netcdf4
+h5netcdf
