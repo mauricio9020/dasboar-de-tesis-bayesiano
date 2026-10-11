@@ -11,33 +11,88 @@ from src import config
 
 logger = logging.getLogger("Pipeline.Stage5")
 
+def connect_graph_islands(w: libpysal.weights.W, gdf: gpd.GeoDataFrame) -> libpysal.weights.W:
+    """
+    Conecta islas y componentes disconexos al vecino más cercano según centroides geométricos,
+    garantizando un grafo conexo (0 islas, 1 único componente conexo) requerido por los modelos
+    espaciales bayesianos CAR/ICAR/BYM2 con restricción de suma cero (sum-to-zero).
+    """
+    from scipy.sparse.csgraph import connected_components
+    neighbors = {k: list(v) for k, v in w.neighbors.items()}
+    centroids = gdf.geometry.centroid
+    adj = w.sparse
+    n_comp, labels = connected_components(adj, directed=False)
+    
+    if n_comp > 1 or len(w.islands) > 0:
+        main_comp = np.argmax(np.bincount(labels))
+        main_nodes = np.where(labels == main_comp)[0]
+        
+        for comp in range(n_comp):
+            if comp == main_comp:
+                continue
+            comp_nodes = np.where(labels == comp)[0]
+            min_dist = np.inf
+            best_c, best_m = None, None
+            for c in comp_nodes:
+                dists = centroids.iloc[main_nodes].distance(centroids.iloc[c])
+                idx_m = dists.idxmin()
+                if dists.loc[idx_m] < min_dist:
+                    min_dist = dists.loc[idx_m]
+                    best_c = c
+                    best_m = idx_m
+            if best_c is not None and best_m is not None:
+                if best_m not in neighbors[best_c]:
+                    neighbors[best_c].append(best_m)
+                if best_c not in neighbors[best_m]:
+                    neighbors[best_m].append(best_c)
+        w_connected = libpysal.weights.W(neighbors)
+        return w_connected
+    return w
+
 def compare_weights(gdf: gpd.GeoDataFrame) -> tuple:
     """
     Construye las matrices Queen y Rook y las compara formalmente.
-    Retorna la matriz seleccionada y un resumen tabular.
+    
+    NOTA METODOLÓGICA (QUEEN vs k-NN):
+    La tesis en ciertos apartados iniciales mencionaba k-NN, pero el análisis espacial de área
+    y los modelos bayesianos CAR/ICAR/BYM2 requieren pesos basados en contigüidad física (Queen de 1er orden).
+    La matriz Queen captura continuidad geográfica real por compartir frontera o vértice común.
+    A diferencia de k-NN que fuerza un número arbitrario y constante de vecinos sin considerar distancia física,
+    Queen refleja la estructura morfológica y topológica del mosaico urbano cantonal.
     """
-    logger.info("Construyendo matriz de pesos espaciales Queen...")
-    # Asegurar que no haya geometrías nulas o vacías
+    logger.info("Construyendo matriz de pesos espaciales Queen (contigüidad de primer orden)...")
     gdf_valid = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty].copy()
     
-    w_queen = libpysal.weights.Queen.from_dataframe(gdf_valid, use_index=False)
+    w_queen_raw = libpysal.weights.Queen.from_dataframe(gdf_valid, use_index=False)
     logger.info("Construyendo matriz de pesos espaciales Rook...")
-    w_rook = libpysal.weights.Rook.from_dataframe(gdf_valid, use_index=False)
+    w_rook_raw = libpysal.weights.Rook.from_dataframe(gdf_valid, use_index=False)
     
-    # Métricas para Queen
+    # Métricas para Queen y Rook crudas
+    queen_islands_raw = len(w_queen_raw.islands)
+    rook_islands_raw = len(w_rook_raw.islands)
+    logger.info(f"Matriz Queen inicial detectó {queen_islands_raw} islas aisladas (Isla Puná: {w_queen_raw.islands}).")
+    logger.info(f"Matriz Rook inicial detectó {rook_islands_raw} islas aisladas.")
+    
+    # Conectar islas para garantizar regularidad en el grafo espacial del modelo
+    logger.info("Conectando islas al vecino continental más cercano para el modelo espacial...")
+    w_queen = connect_graph_islands(w_queen_raw, gdf_valid)
+    w_rook = connect_graph_islands(w_rook_raw, gdf_valid)
+    
     queen_islands = len(w_queen.islands)
     queen_mean_neigh = np.mean([len(v) for v in w_queen.neighbors.values()])
     queen_density = w_queen.pct_nonzero
     
-    # Métricas para Rook
     rook_islands = len(w_rook.islands)
     rook_mean_neigh = np.mean([len(v) for v in w_rook.neighbors.values()])
     rook_density = w_rook.pct_nonzero
     
+    logger.info(f"Tras conexión: Queen tiene {queen_islands} islas y {w_queen.n_components} componentes conexos.")
+    
     comparison_data = {
         "Métrica": [
             "Número de Observaciones (N)",
-            "Número de Islas (Aislados)",
+            "Islas Iniciales (sin conectar)",
+            "Islas Finales (conectadas)",
             "Promedio de Vecinos",
             "Densidad de la Matriz (%)",
             "Máximo número de vecinos",
@@ -45,6 +100,7 @@ def compare_weights(gdf: gpd.GeoDataFrame) -> tuple:
         ],
         "Matriz Queen": [
             w_queen.n,
+            queen_islands_raw,
             queen_islands,
             round(queen_mean_neigh, 2),
             round(queen_density * 100, 4),
@@ -53,6 +109,7 @@ def compare_weights(gdf: gpd.GeoDataFrame) -> tuple:
         ],
         "Matriz Rook": [
             w_rook.n,
+            rook_islands_raw,
             rook_islands,
             round(rook_mean_neigh, 2),
             round(rook_density * 100, 4),
@@ -63,31 +120,28 @@ def compare_weights(gdf: gpd.GeoDataFrame) -> tuple:
     
     df_comp = pd.DataFrame(comparison_data)
     
-    # Selección automática: Se prefiere Queen porque permite uniones de esquinas
-    # y suele generar menos islas en tramas urbanas irregulares.
-    if queen_islands <= rook_islands:
-        selected_w = w_queen
-        selected_name = "Queen"
-        logger.info("Se ha seleccionado la matriz QUEEN por tener menor o igual número de islas.")
-    else:
-        selected_w = w_rook
-        selected_name = "Rook"
-        logger.info("Se ha seleccionado la matriz ROOK por menor número de islas.")
+    # Se selecciona Queen como estándar científico por cubrir uniones de vértices y bordes
+    selected_w = w_queen
+    selected_name = "Queen (Conectada)"
+    logger.info("Se ha seleccionado formalmente la matriz QUEEN con islas conectadas para el análisis ESDA y el modelo Bayesiano.")
         
     return selected_w, selected_name, df_comp
 
 def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     """
     Etapa 5: Análisis Espacial Exploratorio (ESDA)
-    - Compara matrices Queen vs Rook y selecciona la mejor.
-    - Calcula el Moran's I Global con 9999 permutaciones.
+    - Compara matrices Queen vs Rook y conecta islas.
+    - Calcula el Moran's I Global con 9999 permutaciones y semilla fija.
     - Calcula el LISA (Moran Local) para mapear hotspots/coldspots.
     - Genera Moran Scatterplot y mapas LISA numerados a 300 dpi.
     - Guarda tablas y GeoJSON procesados.
     """
     logger.info("Iniciando ETAPA 5: Análisis Espacial Exploratorio (ESDA)")
     
-    # 1. Comparar matrices de vecinos
+    # Fijar semilla para reproducibilidad exacta
+    np.random.seed(config.RANDOM_SEED)
+    
+    # 1. Comparar matrices de vecinos y conectar islas
     w_selected, w_name, df_comp = compare_weights(gdf_total)
     
     # Estandarizar la matriz por filas
@@ -96,14 +150,16 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     # Variable de conteo y tasa para el análisis
     y = gdf_total['homicidios_totales'].values
     
-    # 2. Moran Global
+    # 2. Moran Global con semilla fija
     logger.info("Calculando Moran's I Global con 9999 permutaciones...")
+    np.random.seed(config.RANDOM_SEED)
     moran = Moran(y, w_selected, permutations=9999)
     
     logger.info(f"Resultados Moran Global: I={moran.I:.4f}, E(I)={moran.EI:.4f}, z={moran.z_sim:.4f}, p-valor={moran.p_sim:.4f}")
     
     # 3. Moran Local (LISA)
     logger.info("Calculando LISA (Moran Local) con 9999 permutaciones...")
+    np.random.seed(config.RANDOM_SEED)
     lisa = Moran_Local(y, w_selected, permutations=9999)
     
     # Clasificación LISA

@@ -95,11 +95,20 @@ def run_stage6(df_anual: pd.DataFrame) -> dict:
     
     df_res = pd.DataFrame(list(result_dict.items()), columns=["Parámetro", "Valor"])
     
-    # Guardar en outputs
-    excel_path = os.path.join(config.TABLES_DIR, "tabla_sobredispersion.xlsx")
-    df_res.to_excel(excel_path, index=False)
+    df_ct = pd.DataFrame([
+        {"Parámetro del Test": "Parámetro de Sobredispersión (alpha)", "Estimación": round(alpha_val, 4)},
+        {"Parámetro del Test": "Estadístico t", "Estimación": round(t_stat, 4)},
+        {"Parámetro del Test": "p-valor (Cameron & Trivedi 1990)", "Estimación": f"{p_value:.6e}" if p_value < 1e-4 else round(p_value, 6)},
+        {"Parámetro del Test": "Decisión Metodológica", "Estimación": "Rechazo de H0 de Poisson (Sobredispersión Significativa)" if sobredispersado else "No rechaza H0"}
+    ])
     
-    logger.info(f"Resultados de sobredispersión guardados en: {excel_path}")
+    # Guardar en outputs con dos pestañas claras
+    excel_path = os.path.join(config.TABLES_DIR, "tabla_sobredispersion.xlsx")
+    with pd.ExcelWriter(excel_path) as writer:
+        df_res.to_excel(writer, sheet_name="Resumen", index=False)
+        df_ct.to_excel(writer, sheet_name="Test Cameron-Trivedi", index=False)
+    
+    logger.info(f"Resultados de sobredispersión y test Cameron-Trivedi guardados en: {excel_path}")
     logger.info("ETAPA 6: Diagnóstico de Sobredispersión finalizado con éxito.")
     
     return result_dict

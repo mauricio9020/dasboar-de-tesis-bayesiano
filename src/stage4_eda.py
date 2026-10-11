@@ -53,10 +53,11 @@ def run_stage4(df: pd.DataFrame) -> dict:
     # Paleta de colores consistente
     colors_crim = ['#800000', '#A52A2A', '#D2691E', '#CD853F', '#F4A460']
     
-    # 1. Gráfico 1: Histograma de Edades con KDE
+    # 1. Gráfico 1: Histograma de Edades con KDE (n = 4,402; 232 NaNs excluidos)
     plt.figure(figsize=(8, 5))
+    edad_valid = df['Edad_Limpia'].dropna()
     sns.histplot(data=df, x='Edad_Limpia', kde=True, color='#800000', bins=30, edgecolor='black', alpha=0.7)
-    plt.title("Figura 1: Distribución de la Edad de las Víctimas")
+    plt.title(f"Figura 1: Distribución de la Edad de las Víctimas (n = {len(edad_valid):,}; {df['Edad_Limpia'].isna().sum()} faltantes excluidos)")
     plt.xlabel("Edad (Años)")
     plt.ylabel("Frecuencia (Conteo de Casos)")
     plt.grid(True, axis='y')
@@ -135,7 +136,7 @@ def run_stage4(df: pd.DataFrame) -> dict:
     df['Anio_Mes_Dt'] = pd.to_datetime(df['Anio'].astype(str) + '-' + df['Mes_Num'].astype(str) + '-01')
     ts_data = df.groupby('Anio_Mes_Dt').size().reset_index(name='homicidios')
     plt.plot(ts_data['Anio_Mes_Dt'], ts_data['homicidios'], marker='o', color='#800000', linewidth=2)
-    plt.title("Figura 9: Evolución Mensual de Homicidios en Guayaquil (2024-2026)")
+    plt.title("Figura 9: Evolución Mensual de Homicidios en Guayaquil (2024-2026; Enero 2026 único mes disponible)")
     plt.xlabel("Período (Mes-Año)")
     plt.ylabel("Número de Homicidios")
     plt.grid(True)
@@ -154,13 +155,16 @@ def run_stage4(df: pd.DataFrame) -> dict:
     plt.ylabel("Día de la Semana")
     save_plot("Figura10_heatmap_dia_hora")
 
-    # Estadísticos descriptivos numéricos estructurados
+    # Estadísticos descriptivos numéricos estructurados (edad n = 4,402; 232 valores perdidos excluidos)
+    edad_valid = df['Edad_Limpia'].dropna()
     stats = {
-        "edad_mean": float(df['Edad_Limpia'].mean()),
-        "edad_median": float(df['Edad_Limpia'].median()),
-        "edad_std": float(df['Edad_Limpia'].std()),
-        "edad_p25": float(df['Edad_Limpia'].quantile(0.25)),
-        "edad_p75": float(df['Edad_Limpia'].quantile(0.75)),
+        "edad_n": int(len(edad_valid)),
+        "edad_missing": int(df['Edad_Limpia'].isna().sum()),
+        "edad_mean": float(edad_valid.mean()),
+        "edad_median": float(edad_valid.median()),
+        "edad_std": float(edad_valid.std()),
+        "edad_p25": float(edad_valid.quantile(0.25)),
+        "edad_p75": float(edad_valid.quantile(0.75)),
         "homicidios_totales": len(df),
         "frec_sexo": df[config.COL_SEXO].value_counts().to_dict(),
         "pct_sexo": (df[config.COL_SEXO].value_counts(normalize=True) * 100).to_dict(),

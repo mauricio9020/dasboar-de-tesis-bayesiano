@@ -30,24 +30,26 @@ def run_stage7(df_anual: pd.DataFrame) -> tuple:
     # Asegurar que Anio sea categórico para meter efectos fijos temporales
     df_model['Anio_Cat'] = df_model['Anio'].astype(str)
     
-    # 1. Ajustar Modelo Poisson
-    logger.info("Ajustando modelo de regresión Poisson...")
-    poisson_mod = smf.poisson('homicidios ~ C(Anio_Cat)', data=df_model, offset=df_model['log_area'])
+    # 1. Ajustar Modelo Poisson con log(área) como covariable estimada
+    logger.info("Ajustando modelo de regresión Poisson (log(área) como covariable)...")
+    poisson_mod = smf.poisson('homicidios ~ C(Anio_Cat) + log_area', data=df_model)
     poisson_res = poisson_mod.fit(disp=0)
     
-    # 2. Ajustar Modelo Binomial Negativo (NB2)
-    logger.info("Ajustando modelo de regresión Binomial Negativo...")
+    # 2. Ajustar Modelo Binomial Negativo (NB2) con log(área) como covariable estimada
+    logger.info("Ajustando modelo de regresión Binomial Negativo (NB2)...")
     try:
-        nb_mod = smf.negativebinomial('homicidios ~ C(Anio_Cat)', data=df_model, offset=df_model['log_area'])
+        nb_mod = smf.negativebinomial('homicidios ~ C(Anio_Cat) + log_area', data=df_model)
         nb_res = nb_mod.fit(disp=0)
     except Exception as e:
         logger.warning(f"Error al ajustar Binomial Negativa con formula estándar: {e}. Reintentando con GLM...")
-        # Alternativa GLM con familia NegBin
+        X_vars = sm.add_constant(pd.concat([
+            pd.get_dummies(df_model['Anio_Cat'], drop_first=True, dtype=float),
+            df_model['log_area']
+        ], axis=1))
         nb_res = sm.GLM(
             df_model['homicidios'], 
-            sm.add_constant(pd.get_dummies(df_model['Anio_Cat'], drop_first=True, dtype=float)),
-            family=sm.families.NegativeBinomial(),
-            offset=df_model['log_area']
+            X_vars,
+            family=sm.families.NegativeBinomial()
         ).fit()
     
     # 3. Comparación de Métricas

@@ -210,6 +210,15 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     df_dyn_summary.columns = ['Clasificación Dinámica de Hotspots', 'Número de Subcircuitos']
     create_word_table_from_df(doc, df_dyn_summary, "Tabla 7: Resumen del Comportamiento Espacio-Temporal de los Subcircuitos (2024-2026)", [3.5, 2.0])
     
+    # 8. Tabla 8: Comparación Formal de Modelos Bayesianos mediante LOO-CV (Etapa 8)
+    excel_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_modelos_bayesiana.xlsx")
+    if os.path.exists(excel_comp_path):
+        try:
+            df_comp_b = pd.read_excel(excel_comp_path)
+            create_word_table_from_df(doc, df_comp_b, "Tabla 8: Comparación de Modelos Bayesianos mediante Validación Cruzada LOO-CV (Escala Log ELPD)")
+        except Exception as e:
+            logger.warning(f"No se pudo adjuntar Tabla 8 en Word: {e}")
+            
     # Guardar Documento Word
     word_path = os.path.join(config.TABLES_DIR, "Reporte_Tesis_Flujo_Bayesiano.docx")
     doc.save(word_path)

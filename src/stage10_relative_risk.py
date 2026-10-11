@@ -19,27 +19,37 @@ def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame)
     """
     logger.info("Iniciando ETAPA 10: Estimación de Riesgo Relativo y Mapas")
     
-    # 1. Extraer muestras de la posterior
-    # Coeficientes
-    alpha_samples = trace.posterior['alpha'].values.flatten()             # shape (n_cadenas * n_muestras,)
-    phi_samples = trace.posterior['phi'].values.reshape(-1, trace.posterior['phi'].shape[-1])        # shape (n_samples, n_zonas)
+    # 1. Extraer muestras de la posterior del efecto espacial
+    # Identificar la variable espacial del modelo (phi, psi en BYM2, o spatial_total)
+    spatial_var = 'phi' if 'phi' in trace.posterior else ('psi' if 'psi' in trace.posterior else 'spatial_total')
+    logger.info(f"Extrayendo efecto espacial posterior desde la variable: '{spatial_var}'")
     
+    phi_samples = trace.posterior[spatial_var].values.reshape(-1, trace.posterior[spatial_var].shape[-1])  # shape (n_samples, n_zonas)
     n_samples, n_zonas = phi_samples.shape
     
-    # 2. Calcular Riesgo Relativo para cada subcircuito i
-    # RR_i = exp(alpha + phi_i)
-    # Calculamos para cada muestra para obtener percentiles e intervalos de credibilidad
-    rr_samples = np.zeros((n_samples, n_zonas))
-    for s in range(n_samples):
-        rr_samples[s, :] = np.exp(alpha_samples[s] + phi_samples[s, :])
+    # 2. DEFINICIÓN RIGUROSA DE RIESGO RELATIVO (RR):
+    # En epidemiología espacial (Clayton & Kaldor, 1987; Besag et al., 1991), el Riesgo Relativo RR_i
+    # compara el riesgo del subcircuito i frente a la referencia basal promedio cantonal (RR = 1.0).
+    # Se calcula muestra a muestra estandarizando por la media espacial de los efectos exponenciales:
+    # RR_i^(s) = exp(phi_i^(s)) / [ (1/N) * sum_k exp(phi_k^(s)) ]
+    # De este modo, un subcircuito con RR = 1.0 representa riesgo idéntico a la media cantonal,
+    # RR = 1.5 representa un 50% más de riesgo que el promedio cantonal, y P(RR > 1.5) mide la
+    # probabilidad posterior de riesgo crítico sobre la referencia cantonal estandarizada.
+    
+    exp_phi = np.exp(phi_samples)  # (n_samples, n_zonas)
+    spatial_mean = np.mean(exp_phi, axis=1, keepdims=True)  # (n_samples, 1)
+    rr_samples = exp_phi / spatial_mean  # (n_samples, n_zonas)
+    
+    logger.info(f"Riesgo Relativo calculado para {n_zonas} subcircuitos sobre {n_samples} muestras posteriores.")
+    logger.info(f"Media global de RR_samples verificada: {np.mean(rr_samples):.4f} (referencia cantonal = 1.0000).")
         
-    # Extraer estimaciones
+    # Extraer estimaciones posteriores puntuales y de incertidumbre
     rr_median = np.median(rr_samples, axis=0)
     rr_mean = np.mean(rr_samples, axis=0)
     rr_lower = np.percentile(rr_samples, 2.5, axis=0)
     rr_upper = np.percentile(rr_samples, 97.5, axis=0)
     
-    # Probabilidad de Excedencia P(RR > 1.5)
+    # Probabilidad posterior de excedencia de riesgo crítico P(RR > 1.5)
     exceedance_threshold = 1.5
     prob_exceedance = np.mean(rr_samples > exceedance_threshold, axis=0)
     

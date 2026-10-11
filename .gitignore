@@ -21,3 +21,10 @@ Thumbs.db
 # Heavy generated maps and logs
 outputs/logs/
 outputs/maps/
+
+# Scratch and temporary toolchain files
+scratch/
+
+# Intermediate model traces (only pymc_trace.nc is tracked for dashboard)
+outputs/models/trace_*.nc
+outputs/models/pymc_trace_temp_dashboard.nc

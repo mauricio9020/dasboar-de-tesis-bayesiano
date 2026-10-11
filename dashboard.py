@@ -214,32 +214,23 @@ def load_pymc_trace():
 
 trace = load_pymc_trace()
 
-# Filtrar solo distritos urbanos de Guayaquil para evitar distorsión geográfica y valores atípicos rurales
-distritos_urbanos = ['SUR', 'ESTEROS', '9 DE OCTUBRE', 'PORTETE', 'MODELO', 'FLORIDA', 'PASCUALES', 'NUEVA PROSPERINA', 'CEIBOS']
-if gdf_subcircuitos is not None:
-    gdf_subcircuitos = gdf_subcircuitos[gdf_subcircuitos['distrito_nom'].str.upper().isin(distritos_urbanos)].copy()
+# Cargar estimaciones de riesgo relativo reales desde el archivo de salida del pipeline
+rr_csv_path = os.path.join(config.CLEAN_DATA_DIR, "resultados_riesgo_relativo.csv")
+if os.path.exists(rr_csv_path) and gdf_subcircuitos is not None:
+    try:
+        df_rr_res = pd.read_csv(rr_csv_path)
+        rr_cols_to_merge = [c for c in ['cod_subcircu', 'rr_estimado_mediana', 'rr_estimado_media', 'rr_limite_inf_95', 'rr_limite_sup_95', 'probabilidad_excedencia'] if c in df_rr_res.columns]
+        # Si ya existen en gdf_subcircuitos, no duplicar
+        cols_missing = [c for c in rr_cols_to_merge if c not in gdf_subcircuitos.columns or c == 'cod_subcircu']
+        if len(cols_missing) > 1:
+            gdf_subcircuitos = gdf_subcircuitos.merge(df_rr_res[cols_missing], on='cod_subcircu', how='left')
+    except Exception as e:
+        st.warning(f"Aviso al cargar resultados de riesgo relativo: {e}")
 
 # Validar que los archivos existan
 if df_homicidios is None or gdf_subcircuitos is None:
-    st.error("⚠️ Error: No se encontraron las bases de datos. Asegúrate de colocar el archivo Excel de muertes violentas en el directorio del proyecto.")
+    st.error("⚠️ Error: No se encontraron las bases de datos. Asegúrate de colocar el archivo Excel de muertes violentas en el directorio del proyecto y ejecutar el pipeline.")
     st.stop()
-
-# Si no existen columnas de riesgo en gdf_subcircuitos, inyectar valores mock/simplificados temporales para visualización
-if 'rr_estimado_mediana' not in gdf_subcircuitos.columns:
-    # Creamos estimaciones de riesgo basadas en conteo real de homicidios
-    conteo_sub = df_homicidios.groupby(config.COL_COD_SUBCIRCUITO).size().to_dict()
-    gdf_subcircuitos['homicidios_totales'] = gdf_subcircuitos['cod_subcircu'].map(conteo_sub).fillna(0)
-    # Tasa cruda
-    gdf_subcircuitos['tasa_cruda'] = gdf_subcircuitos['homicidios_totales'] / gdf_subcircuitos['Area_km2']
-    mean_tasa = gdf_subcircuitos['tasa_cruda'].mean() if gdf_subcircuitos['tasa_cruda'].mean() > 0 else 1.0
-    # Estimación de RR simple
-    gdf_subcircuitos['rr_estimado_mediana'] = gdf_subcircuitos['tasa_cruda'] / mean_tasa
-    # Acotar límites
-    gdf_subcircuitos['rr_estimado_mediana'] = gdf_subcircuitos['rr_estimado_mediana'].clip(0.1, 4.5)
-    # Probabilidad de excedencia
-    gdf_subcircuitos['probabilidad_excedencia'] = (gdf_subcircuitos['rr_estimado_mediana'] / 2.0).clip(0.0, 0.99)
-    gdf_subcircuitos['rr_limite_inf_95'] = gdf_subcircuitos['rr_estimado_mediana'] - 0.3
-    gdf_subcircuitos['rr_limite_sup_95'] = gdf_subcircuitos['rr_estimado_mediana'] + 0.4
 
 # ----------------- SIDEBAR CONTROLS ----------------- #
 with st.sidebar:
@@ -276,6 +267,14 @@ tab_kpi, tab_mapa, tab_bayes, tab_modelo_bayesiano, tab_sim, tab_downloads = st.
 # ================= TAB 1: EDA & KPIs =================
 with tab_kpi:
     st.subheader("Análisis Exploratorio y Preprocesamiento de la Base de Muertes Violentas")
+    
+    st.info("""
+    📌 **Avisos Metodológicos de Calidad de Datos:**
+    - **Muestra depurada:** **N = 4,634** homicidios confirmados (4,716 registros crudos menos 35 duplicados y 47 fuera del bounding box oficial de Guayaquil).
+    - **Año 2026:** Contiene únicamente el mes de **enero (202 casos)**. Para no distorsionar las tasas anuales ni la caminata aleatoria temporal RW1, el panel anual del modelo bayesiano modela los años completos **2024 y 2025** (488 observaciones en 244 subcircuitos), preservando 2026 en el panel mensual de 25 meses.
+    - **Variable Edad:** Registra 232 valores faltantes en la fuente policial original; las estadísticas de edad se reportan estrictamente sobre la submuestra válida de **n = 4,402** casos sin imputaciones sintéticas.
+    - **Variable Antecedentes:** Se encuentra vacía en el 100% de los registros policiales (4,634 registros); fue excluida formalmente del análisis.
+    """)
     
     # Contenedor de filtros premium con diseño de tarjeta
     with st.container(border=True):
@@ -379,11 +378,13 @@ with tab_kpi:
         """, unsafe_allow_html=True)
         
     with col4:
+        valid_age_cnt = df_filtered['Edad_Limpia'].dropna().count()
+        missing_age_cnt = df_filtered['Edad_Limpia'].isna().sum()
         st.markdown(f"""
         <div class="stat-card">
-            <div class="stat-card-title"><i class="fa-solid fa-user"></i> Edad Promedio de Víctima</div>
+            <div class="stat-card-title"><i class="fa-solid fa-user"></i> Edad Promedio (n = {valid_age_cnt:,})</div>
             <h2>{mean_age:.1f} Años</h2>
-            <p style="font-size:0.8rem; color:#8b949e;">{age_subtitle}</p>
+            <p style="font-size:0.8rem; color:#8b949e;">{age_subtitle} | {missing_age_cnt} faltantes excluidos</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -575,20 +576,18 @@ with tab_mapa:
     conteo_sub_cum = df_cumulative.groupby(config.COL_COD_SUBCIRCUITO).size().to_dict()
     gdf_map['homicidios_totales'] = gdf_map['cod_subcircu'].map(conteo_sub_cum).fillna(0)
     
-    # 2. Calcular Riesgo Relativo dinámico proporcional para la visualización del crecimiento
-    gdf_map['tasa_cruda'] = gdf_map['homicidios_totales'] / gdf_map['Area_km2']
-    mean_tasa = gdf_map['tasa_cruda'].mean()
-    if mean_tasa == 0:
-        mean_tasa = 1.0
-    gdf_map['rr_estimado_mediana'] = gdf_map['tasa_cruda'] / mean_tasa
-    gdf_map['rr_estimado_mediana'] = gdf_map['rr_estimado_mediana'].clip(0.1, 8.0)
-    
-    # Escalar probabilidad de excedencia acumulada para la visualización
-    gdf_map['probabilidad_excedencia'] = gdf_map['rr_estimado_mediana'].apply(
-        lambda x: 0.90 if x > 1.5 else 0.50 if x > 0.9 else 0.15
-    )
-    gdf_map['rr_limite_inf_95'] = gdf_map['rr_estimado_mediana'] * 0.7
-    gdf_map['rr_limite_sup_95'] = gdf_map['rr_estimado_mediana'] * 1.3
+    # 2. Utilizar las estimaciones de Riesgo Relativo y Probabilidad de Excedencia reales del modelo bayesiano
+    if 'rr_estimado_mediana' in gdf_subcircuitos.columns:
+        gdf_map['rr_estimado_mediana'] = gdf_subcircuitos['rr_estimado_mediana']
+        gdf_map['probabilidad_excedencia'] = gdf_subcircuitos['probabilidad_excedencia']
+        gdf_map['rr_limite_inf_95'] = gdf_subcircuitos.get('rr_limite_inf_95', gdf_map['rr_estimado_mediana'])
+        gdf_map['rr_limite_sup_95'] = gdf_subcircuitos.get('rr_limite_sup_95', gdf_map['rr_estimado_mediana'])
+    else:
+        # Si aún no se ha ejecutado el modelo bayesiano, indicar NaN
+        gdf_map['rr_estimado_mediana'] = np.nan
+        gdf_map['probabilidad_excedencia'] = np.nan
+        gdf_map['rr_limite_inf_95'] = np.nan
+        gdf_map['rr_limite_sup_95'] = np.nan
     
     col_m1, col_m2 = st.columns([3, 1.2])
     
@@ -683,6 +682,22 @@ RR: {row_z['rr_estimado_mediana']:.2f}x
             most_precise_name = "N/A"
             most_precise_ci = "[0, 0]"
 
+        # Leer criterios de información dinámicos para los indicadores
+        crit_path_side = os.path.join(config.TABLES_DIR, "tabla_criterios_informacion.xlsx")
+        crit_waic_str = "N/D"
+        crit_loo_str = "N/D"
+        if os.path.exists(crit_path_side):
+            try:
+                df_c_side = pd.read_excel(crit_path_side)
+                c_map_side = dict(zip(df_c_side['Métrica'], df_c_side['Valor']))
+                if 'ELPD_WAIC' in c_map_side:
+                    crit_waic_str = f"{c_map_side['ELPD_WAIC']:.1f}"
+                if 'ELPD_LOO' in c_map_side:
+                    crit_loo_str = f"{c_map_side['ELPD_LOO']:.1f}"
+            except Exception:
+                pass
+        draws_cnt_str = f"{trace.posterior.dims.get('chain', 4) * trace.posterior.dims.get('draw', 1000):,}" if trace is not None else "4,000"
+
         # Panel derecho con estadísticas avanzadas y leyendas
         st.markdown(f"""<div class="stat-card" style="border-left: 5px solid #ff4444; margin-bottom: 12px; padding: 15px;">
 <div style="font-size: 0.85rem; font-weight: bold; color: #ff4444; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;">
@@ -727,20 +742,20 @@ RR: {row_z['rr_estimado_mediana']:.2f}x
 </div>
 <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.8rem;">
 <div style="display: flex; justify-content: space-between;">
-<span>WAIC</span>
-<strong style="color: #c9d1d9;">-2036.2</strong>
+<span>ELPD-WAIC</span>
+<strong style="color: #c9d1d9;">{crit_waic_str}</strong>
 </div>
 <div style="display: flex; justify-content: space-between; border-top: 1px solid #30363d; padding-top: 4px;">
-<span>LOO</span>
-<strong style="color: #c9d1d9;">-2122.5</strong>
+<span>ELPD-LOO</span>
+<strong style="color: #c9d1d9;">{crit_loo_str}</strong>
 </div>
 <div style="display: flex; justify-content: space-between; border-top: 1px solid #30363d; padding-top: 4px;">
-<span>ELPD (LOO)</span>
-<strong style="color: #66bb6a;">-1061.2</strong>
+<span>Escala</span>
+<strong style="color: #66bb6a;">Log (ELPD)</strong>
 </div>
 <div style="display: flex; justify-content: space-between; border-top: 1px solid #30363d; padding-top: 4px;">
 <span>Muestras Posteriores</span>
-<strong style="color: #58a6ff;">600</strong>
+<strong style="color: #58a6ff;">{draws_cnt_str}</strong>
 </div>
 </div>
 </div>
@@ -766,41 +781,57 @@ El encogimiento bayesiano (shrinkage) del estimador espacial reduce artificialme
 
 # ================= TAB 3: EVALUACIÓN BAYESIANA =================
 with tab_bayes:
-    st.subheader("Evaluación de Convergencia Bayesiana (ADVI) y Métricas")
-    st.markdown("Esta sección resume los diagnósticos de convergencia y ajuste del modelo Bayesiano jerárquico estimado mediante Inferencia Variacional (ADVI) en PyMC.")
+    st.subheader("Evaluación de Convergencia Bayesiana (NUTS) y Diagnósticos MCMC")
+    st.markdown("Esta sección resume los diagnósticos de convergencia y bondad de ajuste del modelo Bayesiano jerárquico estimado mediante el muestreador No-U-Turn Sampler (NUTS) en PyMC.")
     
     col_d1, col_d2 = st.columns(2)
     
     with col_d1:
-        st.markdown("**Métricas Generales de Inferencia**")
-        st.markdown("""
-        - **Método de Inferencia:** ADVI (Automatic Differentiation Variational Inference).
-        - **Muestras Posteriores Extraídas:** 600 muestras.
-        - **Iteraciones del Fit Variacional:** 10,000 iteraciones para convergencia del ELBO.
-        - **WAIC (Watanabe-Akaike Information Criterion):** **-2036.21** (Escala logarítmica).
-        - **LOO-CV (Leave-One-Out Cross-Validation):** **-2122.50** (Escala logarítmica).
-        - **ELPD (Expected Log Pointwise Predictive Density):** **-1061.25**
-        - **Estado del ELBO:** Convergencia alcanzada con éxito (mínimo local verificado).
+        st.markdown("**Métricas Generales del Muestreo NUTS**")
+        
+        # Leer diagnósticos de convergencia reales
+        diag_path = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_bayesianos.xlsx")
+        rhat_max_val = "N/D"
+        ess_bulk_val = "N/D"
+        ess_tail_val = "N/D"
+        div_val = "0"
+        if os.path.exists(diag_path):
+            try:
+                df_diag_conv = pd.read_excel(diag_path, sheet_name="Diagnosticos_Convergencia")
+                diag_map = dict(zip(df_diag_conv['Diagnóstico'], df_diag_conv['Valor']))
+                rhat_max_val = f"{diag_map.get('R_hat Máximo', 1.0):.4f}"
+                ess_bulk_val = f"{diag_map.get('ESS Bulk Mínimo', 0):,.0f}"
+                ess_tail_val = f"{diag_map.get('ESS Tail Mínimo', 0):,.0f}"
+                div_val = f"{diag_map.get('Divergencias NUTS', 0)}"
+            except Exception:
+                pass
+                
+        st.markdown(f"""
+        - **Muestreador Hamiltoniano:** NUTS (No-U-Turn Sampler, PyMC).
+        - **Cadenas MCMC:** 4 cadenas independientes en paralelo.
+        - **Calentamiento (Tune):** 1,000 iteraciones por cadena (4,000 iteraciones tune).
+        - **Muestras Efectivas (Draws):** 1,000 iteraciones por cadena ({draws_cnt_str} muestras posteriores totales).
+        - **ELPD-WAIC:** **{crit_waic_str}** (Escala logarítmica).
+        - **ELPD-LOO:** **{crit_loo_str}** (Escala logarítmica).
+        - **Convergencia Gelman-Rubin (r̂ máx):** **{rhat_max_val}** (r̂ ≤ 1.05 indica convergencia completa).
+        - **ESS Mínimo (Bulk / Tail):** **{ess_bulk_val}** / **{ess_tail_val}**
+        - **Divergencias NUTS:** **{div_val}**
         """)
         
         # Mostrar imágenes de traza si existen en outputs/figures
         trace_img_path = os.path.join(config.FIGURES_DIR, "Figura14_bayesian_traceplots.png")
         if os.path.exists(trace_img_path):
-            st.image(trace_img_path, caption="Figura 14: Distribución posterior y muestras de la aproximación variacional (ADVI)")
+            st.image(trace_img_path, caption="Figura 14: Traceplots de los parámetros posteriores de las 4 cadenas NUTS")
         else:
-            st.info("💡 Consejo: Ejecuta el script general `run_pipeline.py` en la consola para pre-calcular y generar las imágenes de diagnóstico de tu tesis.")
+            st.info("💡 Ejecuta `python run_pipeline.py` en la consola para generar los gráficos de diagnóstico.")
             
     with col_d2:
         # Mostrar imagen del posterior predictivo PPC
         ppc_img_path = os.path.join(config.FIGURES_DIR, "Figura19_bayesian_ppc.png")
         if os.path.exists(ppc_img_path):
-            st.image(ppc_img_path, caption="Figura 19: Posterior Predictive Check (Comparación de ajuste de distribuciones)")
+            st.image(ppc_img_path, caption="Figura 19: Comprobación Predictiva Posterior (PPC) en rango completo")
         else:
-            # Gráfico dummy de Arviz para que se vea profesional
-            fig_dummy = go.Figure()
-            fig_dummy.add_trace(go.Scatter(x=np.arange(10), y=np.random.normal(0,1,10), name='Trace'))
-            fig_dummy.update_layout(title="Distribución Posterior y Muestras ADVI (Espera de Inferencia Real)", paper_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig_dummy, use_container_width=True)
+            st.info("💡 La imagen de verificación predictiva posterior (PPC) se generará al ejecutar `python run_pipeline.py`.")
 
 # ================= TAB 3.5: MODELO BAYESIANO =================
 with tab_modelo_bayesiano:
@@ -816,7 +847,7 @@ with tab_modelo_bayesiano:
         subtab_espec, subtab_post, subtab_diag, subtab_comp, subtab_mapas, subtab_resumen = st.tabs([
             "📖 Pestaña 1: Especificación del Modelo",
             "📈 Pestaña 2: Distribuciones Posteriores",
-            "🔍 Pestaña 3: Diagnóstico Bayesiano (ADVI)",
+            "🔍 Pestaña 3: Diagnóstico Bayesiano (NUTS)",
             "📊 Pestaña 4: Comparación del Modelo",
             "🗺️ Pestaña 5: Mapas Bayesianos",
             "📝 Pestaña 6: Resumen del Modelo"
@@ -834,7 +865,7 @@ with tab_modelo_bayesiano:
         with subtab_espec:
             st.subheader("Especificación Matemática y Estructura Jerárquica")
             st.markdown("""
-            El modelo ajustado para estimar la tasa predictiva y el riesgo relativo de muertes violentas en Guayaquil (2024-2026) se formula como un modelo Bayesiano Jerárquico Espacio-Temporal con verosimilitud **Binomial Negativa** para controlar la sobredispersión extrema presente en los datos.
+            El modelo ajustado para estimar la tasa predictiva y el riesgo relativo de muertes violentas en Guayaquil se formula como un modelo Bayesiano Jerárquico Espacio-Temporal con verosimilitud **Binomial Negativa** para controlar la sobredispersión territorial extrema.
             
             #### 1. Estructura Jerárquica del Modelo
             
@@ -844,21 +875,21 @@ with tab_modelo_bayesiano:
             **Media Teórica:**
             $$E(Y_{it}) = \\mu_{it}$$
             
-            **Varianza Teórica (Modelo de Sobredispersión):**
+            **Varianza Teórica (Modelo de Sobredispersión NB2):**
             $$\\text{Var}(Y_{it}) = \\mu_{it} + \\frac{\\mu_{it}^2}{\\alpha_{disp}}$$
             
             **Función de Enlace (Log-Link):**
-            $$\\log(\\mu_{it}) = \\alpha + \\phi_i + \\gamma_t + \\log(E_i)$$
+            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\gamma_t$$
             
             Donde:
             - $Y_{it}$: Número de homicidios observados en el subcircuito $i$ en el año $t$.
-            - $\\mu_{it}$: Número de casos esperados ajustado por el modelo.
+            - $\\mu_{it}$: Media predictiva condicional ajustada por el modelo.
             - $\\alpha$: Intercepto global (tasa basal cantonal).
-            - $\\phi_i$: Efecto aleatorio espacial estructurado para el subcircuito $i$.
-            - $\\gamma_t$: Efecto aleatorio temporal para el año $t$.
-            - $E_i$: Número esperado de casos para el subcircuito $i$ bajo riesgo uniforme, calculado como:
-              $$E_i = A_i \\times \\frac{\\sum_k Y_k}{\\sum_k A_k}$$
-              donde $A_i$ es el área en $\\text{km}^2$ de la zona $i$. Esto actúa como un offset epidemiológico de exposición territorial en lugar del área cruda.
+            - $\\beta_{\\text{area}}$: Coeficiente de regresión estimado para la exposición territorial $\\log(\\text{Area}_i)$ (incorporado como covariable ante la ausencia de censo poblacional a escala subcircuital).
+            - $\\phi_i$: Efecto aleatorio espacial estructurado ICAR (o BYM2) para el subcircuito $i$.
+            - $\\gamma_t$: Tendencia temporal autorregresiva de orden 1 (RW1) para el año $t$.
+            - $\\alpha_{disp}$: Parámetro de dispersión de la distribución Binomial Negativa.
+
             
             #### 2. Distribuciones a Priori (Priors)
             Las asignaciones a priori para regularizar los parámetros y permitir un muestreo estable son:
@@ -950,38 +981,58 @@ with tab_modelo_bayesiano:
                 else:
                     st.info("Sin coordenadas temporales.")
                     
-        # Pestaña 3: Diagnósticos ADVI
+        # Pestaña 3: Diagnósticos NUTS MCMC
         with subtab_diag:
-            st.subheader("Evaluación de la Aproximación Variacional y Diagnóstico del Modelo")
-            st.markdown("Evaluación de la aproximación de la distribución posterior obtenida mediante ADVI y comprobación del ajuste del modelo.")
+            st.subheader("Evaluación de Convergencia MCMC (NUTS) y Diagnósticos del Modelo")
+            st.markdown("Verificación rigurosa de convergencia de cadenas, mezcla Hamiltoniana y comprobación predictiva posterior.")
+            
+            diag_vars = [v for v in ['alpha', 'beta_area', 'sigma_phi', 'sigma_theta', 'sigma_s', 'sigma_t', 'alpha_disp'] if v in trace.posterior]
             
             opcion_diag = st.selectbox(
                 "Selecciona la visualización de diagnóstico:",
-                ["Distribuciones posteriores y muestras (ADVI)", "Posterior Predictive Check (PPC)"],
+                ["Traceplots de Cadenas MCMC (NUTS)", "Comprobación Predictiva Posterior (PPC)", "Gráfico de Energía (Energy Plot NUTS)"],
                 key="opcion_diag_select"
             )
             
-            if opcion_diag == "Distribuciones posteriores y muestras (ADVI)":
-                st.markdown("#### Distribución posterior (izquierda) y muestras posteriores aproximadas (derecha)")
-                fig, axes = plt.subplots(4, 2, figsize=(10, 10))
-                az.plot_trace(trace, var_names=['alpha', 'alpha_disp', 'sigma_phi', 'sigma_t'], axes=axes)
+            if opcion_diag == "Traceplots de Cadenas MCMC (NUTS)":
+                st.markdown("#### Traceplots de Parámetros Clave (4 cadenas NUTS superpuestas)")
+                fig, axes = plt.subplots(len(diag_vars), 2, figsize=(10, 2.5 * len(diag_vars)))
+                az.plot_trace(trace, var_names=diag_vars, axes=axes)
                 plt.tight_layout()
                 st.pyplot(fig)
                 plt.close(fig)
                 
+            elif opcion_diag == "Comprobación Predictiva Posterior (PPC)":
+                st.markdown("#### Comprobación Predictiva Posterior (PPC) - Rango Completo")
+                ppc_img = os.path.join(config.FIGURES_DIR, "Figura19_bayesian_ppc.png")
+                if os.path.exists(ppc_img):
+                    st.image(ppc_img, use_column_width=True)
+                elif hasattr(trace, 'posterior_predictive') and 'y_obs' in trace.posterior_predictive:
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    az.plot_ppc(trace, ax=ax, num_pp_samples=100)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.info("No se encontraron muestras predictivas. Ejecuta `python run_pipeline.py`.")
             else:
-                st.markdown("#### Posterior Predictive Check (PPC)")
-                fig, ax = plt.subplots(figsize=(8, 4))
-                az.plot_ppc(trace, ax=ax, num_pp_samples=100)
-                st.pyplot(fig)
-                plt.close(fig)
+                st.markdown("#### Energy Plot (Transición vs Marginal de Energía en NUTS)")
+                energy_img = os.path.join(config.FIGURES_DIR, "Figura17_bayesian_energy.png")
+                if os.path.exists(energy_img):
+                    st.image(energy_img, use_column_width=True)
+                elif hasattr(trace, 'sample_stats') and 'energy' in trace.sample_stats:
+                    fig, ax = plt.subplots(figsize=(7, 4))
+                    az.plot_energy(trace, ax=ax)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.info("Energy plot no disponible en la traza cargada.")
                 
             st.markdown("""
             **Interpretación de los diagnósticos:**
-            - **Distribuciones posteriores:** Las densidades posteriores obtenidas mediante ADVI presentan formas suaves y unimodales, indicando una aproximación estable de la distribución posterior para los parámetros del modelo.
-            - **Muestras posteriores:** Las muestras generadas a partir de la aproximación variacional fluctúan alrededor de la media posterior sin patrones sistemáticos, reflejando una representación consistente de la distribución posterior aproximada (lo que tradicionalmente se evaluaba como trazas de muestreo).
-            - **Posterior Predictive Check (PPC):** La comparación entre los datos observados y las réplicas generadas por el modelo evidencia una adecuada capacidad para reproducir el comportamiento de los conteos de muertes violentas, respaldando el ajuste del modelo binomial negativo.
-            - **WAIC y LOO:** Los criterios de información utilizados permiten evaluar la capacidad predictiva del modelo considerando simultáneamente su ajuste y complejidad, constituyendo las principales métricas empleadas para valorar el desempeño del modelo estimado.
+            - **Cadenas MCMC:** Las trazas muestran orugas densas y estacionarias (fuzzy caterpillars) para las 4 cadenas independientes superpuestas, indicando convergencia y buena mezcla en el espacio de estados.
+            - **R_hat (Gelman-Rubin):** Valores de r̂ ≈ 1.00 confirman la equivalencia entre varianza dentro de cadenas y entre cadenas.
+            - **Posterior Predictive Check (PPC):** La coincidencia entre la densidad de datos observados y las réplicas posteriores valida la capacidad del modelo para modelar conteos reales con sobredispersión.
+            - **ELPD (WAIC / LOO):** Miden la densidad predictiva logarítmica esperada fuera de muestra, penalizando la complejidad efectiva del modelo sin sesgos optimistas.
             """)
             
         # Pestaña 4: Comparación del modelo
@@ -996,94 +1047,101 @@ with tab_modelo_bayesiano:
             with comp_tab1:
                 st.markdown("Criterios de información de desviación para contrastar la capacidad predictiva frente a estimadores de máxima verosimilitud clásicos.")
                 
-                # Cargar métricas reales de la tesis (escala log-likelihood, WAIC ≈ -2036.21, LOO ≈ -2122.50)
-                waic_val = "-2036.21"
-                loo_val = "-2122.50"
+                # Cargar métricas reales desde outputs/tables/
+                excel_crit_path = os.path.join(config.TABLES_DIR, "tabla_criterios_informacion.xlsx")
+                excel_clas_path = os.path.join(config.TABLES_DIR, "tabla_modelos_clasicos.xlsx")
+                
+                waic_val = "N/D"
+                loo_val = "N/D"
+                if os.path.exists(excel_crit_path):
+                    try:
+                        df_crit = pd.read_excel(excel_crit_path)
+                        crit_map = dict(zip(df_crit['Métrica'], df_crit['Valor']))
+                        if 'ELPD_WAIC' in crit_map:
+                            waic_val = f"{crit_map['ELPD_WAIC']:,.2f}"
+                        elif 'WAIC' in crit_map:
+                            waic_val = f"{crit_map['WAIC']:,.2f}"
+                        if 'ELPD_LOO' in crit_map:
+                            loo_val = f"{crit_map['ELPD_LOO']:,.2f}"
+                        elif 'LOO' in crit_map:
+                            loo_val = f"{crit_map['LOO']:,.2f}"
+                    except Exception as e:
+                        st.error(f"Error al leer criterios de información: {e}")
                 
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
-                    st.metric(label="WAIC (Watanabe-Akaike Information Criterion)", value=waic_val)
+                    st.metric(label="ELPD-WAIC (Escala Log)", value=waic_val)
                 with col_c2:
-                    st.metric(label="LOO-CV (Leave-One-Out Cross-Validation)", value=loo_val)
-                    
+                    st.metric(label="ELPD-LOO (Escala Log)", value=loo_val)
+                
+                if os.path.exists(excel_clas_path):
+                    st.markdown("#### Comparación Frecuentista Clásica (Evidencia de Sobredispersión):")
+                    try:
+                        df_clas = pd.read_excel(excel_clas_path)
+                        st.dataframe(df_clas, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Error al leer tabla clásica: {e}")
+                
                 st.markdown(f"""
                 #### Evaluación del Desempeño Predictivo y Generalización:
-                El modelo bayesiano jerárquico ajustado presenta un **WAIC** de **{waic_val}** y un **LOO-CV** de **{loo_val}**. Estos criterios miden la capacidad de generalización del modelo (el poder predictivo esperado fuera de la muestra) a partir de la densidad de probabilidad posterior.
+                El modelo bayesiano jerárquico ajustado presenta un **ELPD-WAIC** de **{waic_val}** y un **ELPD-LOO** de **{loo_val}** (en escala logarítmica de densidad predictiva esperada).
                 
-                1. **Capacidad de Generalización (WAIC / LOO-CV):** Ambos criterios estiman la verosimilitud de datos futuros no observados y penalizan la complejidad del modelo (el número efectivo de parámetros). Valores menores de WAIC e incremento en la verosimilitud esperada demuestran que la estructura espacio-temporal propuesta generaliza de forma robusta la tasa de criminalidad sin incurrir en sobreajuste (overfitting).
-                2. **Tratamiento de la Sobredispersión:** La verosimilitud **Binomial Negativa** introduce el parámetro de dispersión $\\alpha_{{disp}}$ para flexibilizar la relación media-varianza. Esto permite modelar de forma precisa datos de conteo con alta concentración y variabilidad territorial extrema sin sesgar las estimaciones, lo cual es inalcanzable con una distribución Poisson simple.
-                3. **Regularización y Suavizado:** El prior espacial **ICAR** y el temporal **RW1** ejercen una regularización (shrinkage) que suaviza los estimadores en zonas con pocos registros o datos fragmentados hacia la tendencia regional circundante, mejorando el desempeño predictivo global evaluado por WAIC y LOO.
+                1. **Capacidad de Generalización (WAIC / LOO-CV):** Ambos criterios estiman la verosimilitud de datos futuros no observados y penalizan la complejidad del modelo (el número efectivo de parámetros). Valores de mayor ELPD demuestran que la estructura espacio-temporal propuesta generaliza de forma robusta la tasa de criminalidad sin incurrir en sobreajuste (overfitting).
+                2. **Tratamiento de la Sobredispersión:** La verosimilitud **Binomial Negativa** introduce el parámetro de dispersión $\\alpha_{{disp}}$ para flexibilizar la relación media-varianza. Esto permite modelar de forma precisa datos de conteo con alta concentración y variabilidad territorial extrema sin sesgar las estimaciones.
+                3. **Regularización y Suavizado:** El prior espacial **ICAR** y el temporal **RW1** ejercen una regularización (shrinkage) que suaviza los estimadores en zonas con pocos registros hacia la tendencia regional circundante.
                 """)
                 
             with comp_tab2:
-                st.markdown("Comparativa de bondad de ajuste y capacidad predictiva entre diferentes formulaciones de modelado Bayesiano Jerárquico.")
+                st.markdown("Comparativa de bondad de ajuste y capacidad predictiva entre diferentes formulaciones de modelado Bayesiano Jerárquico ajustadas con NUTS.")
                 
-                # Cargar tabla comparativa bayesiana
+                # Cargar tabla comparativa bayesiana real generada por stage8
                 excel_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_modelos_bayesiana.xlsx")
                 if os.path.exists(excel_comp_path):
                     try:
                         df_comp_bayes = pd.read_excel(excel_comp_path)
-                        st.dataframe(df_comp_bayes.style.format({
-                            'WAIC': '{:,.2f}',
-                            'LOO-CV': '{:,.2f}',
-                            'p_WAIC (Parámetros Efectivos)': '{:,.1f}'
-                        }), use_container_width=True)
+                        st.dataframe(df_comp_bayes, use_container_width=True)
+                        
+                        st.markdown("""
+                        ### 📖 Formulación Matemática de los 4 Modelos Comparados
+                        
+                        1. **Poisson Bayesiano Jerárquico (Línea Base):**
+                           $$Y_{it} \\sim \\text{Poisson}(\\mu_{it})$$
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\gamma_t$$
+                           Donde $\\phi \\sim \\text{ICAR}(W)$ y $\\gamma \\sim \\text{RW1}$.
+                           
+                        2. **Binomial Negativa Jerárquico (ICAR):**
+                           $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\gamma_t$$
+                           $$\\text{Var}(Y_{it}) = \\mu_{it} + \\frac{\\mu_{it}^2}{\\alpha_{disp}}$$
+                           
+                        3. **Binomial Negativa con ICAR + Efecto No Estructurado (Besag et al., 1991):**
+                           $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i + \\gamma_t$$
+                           Donde $\\theta_i \\sim \\text{Normal}(0, \\sigma_\\theta^2)$ captura heterogeneidad zonal no correlacionada.
+                           
+                        4. **BYM2 Binomial Negativo con Prior PC (Riebler et al., 2016):**
+                           $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i + \\gamma_t$$
+                           $$\\psi_i = \\sigma_s \\left( \\sqrt{\\rho} \\phi^*_i + \\sqrt{1 - \\rho} \\theta^*_i \\right)$$
+                           Donde $\\rho \\sim \\text{Beta}(0.5, 0.5)$ controla la proporción de varianza espacial estructurada y $\\phi^*_i$ es el componente ICAR escalado por la varianza geométrica marginal.
+                        """)
                     except Exception as e:
-                        st.error(f"Error al leer la tabla de comparación: {e}")
+                        st.error(f"Error al leer la tabla de comparación bayesiana: {e}")
                 else:
-                    st.info("💡 Consejo: Ejecuta `run_pipeline.py` en la consola para pre-generar los datos comparativos en la tabla Excel.")
-                
-                st.markdown("""
-                ### 📖 Formulación de Modelos Comparados
-                
-                A continuación se especifican las estructuras matemáticas de los 4 modelos bayesianos contrastados:
-                
-                #### 1. Poisson Bayesiano Jerárquico (Línea Base)
-                Asume que la varianza es igual a la media ($\\text{Var}(Y_{it}) = \\mu_{it}$):
-                $$Y_{it} \\sim \\text{Poisson}(\\mu_{it})$$
-                $$\\log(\\mu_{it}) = \\alpha + \\phi_i + \\gamma_t + \\log(E_i)$$
-                
-                #### 2. Zero-Inflated Poisson (ZIP) Bayesiano
-                Modela un exceso de ceros estructurales mediante un proceso mixto de Bernoulli y Poisson:
-                $$Y_{it} \\sim \\text{ZIP}(p, \\lambda_{it})$$
-                $$P(Y_{it} = y) = \\begin{cases} p + (1-p)e^{-\\lambda_{it}}, & y=0 \\\\ (1-p)\\frac{\\lambda_{it}^y e^{-\\lambda_{it}}}{y!}, & y > 0 \\end{cases}$$
-                $$\\log(\\lambda_{it}) = \\alpha + \\phi_i + \\gamma_t + \\log(E_i)$$
-                Donde $p \\sim \\text{Beta}(1, 1)$ representa la probabilidad de ceros estructurales.
-                
-                #### 3. Binomial Negativa Jerárquico (Modelo Implementado)
-                Introduce un parámetro de sobredispersión $\\alpha_{disp}$ para capturar varianza superior a la media:
-                $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
-                $$\\log(\\mu_{it}) = \\alpha + \\phi_i + \\gamma_t + \\log(E_i)$$
-                $$\\text{Var}(Y_{it}) = \\mu_{it} + \\frac{\\mu_{it}^2}{\\alpha_{disp}}$$
-                
-                #### 4. BYM2 Binomial Negativo (Ajuste Alternativo)
-                Refina el efecto espacial particionándolo en un componente estructurado (ICAR) y otro no estructurado (ruido gaussiano blanco) de forma escalada:
-                $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
-                $$\\log(\\mu_{it}) = \\alpha + \\theta_i + \\gamma_t + \\log(E_i)$$
-                $$\\theta_i = \\frac{1}{\\sqrt{\\tau}} \\left( \\sqrt{1 - \\rho}\\epsilon_i + \\sqrt{\\rho}\\phi^*_i \\right)$$
-                Donde:
-                - $\\epsilon_i \\sim \\text{Normal}(0, 1)$ es la variación espacial no estructurada.
-                - $\\phi^*_i$ es el efecto espacial estructurado ICAR escalado.
-                - $\\rho \\in [0, 1]$ es el parámetro de mezcla espacial ($\\rho \\to 1$ indica dominancia espacial estructurada; $\\rho \\to 0$ indica ruido no estructurado).
-                
-                ---
-                
-                ### 🧪 Demostración y Racionalidad de Selección
-                
-                1. **Descarte del Modelo Poisson:** La sobredispersión territorial en el Cantón Guayaquil es masiva (Varianza = 569.41 vs Media = 18.99). Poisson fuerza $\\text{Var} = \\text{Mean}$, lo cual subestima drásticamente los errores estándar y genera un ajuste predictivo deficiente, evidenciado por un incremento del doble en los valores de WAIC y LOO-CV.
-                2. **Insuficiencia del Modelo ZIP:** Aunque Guayaquil cuenta con subcircuitos con cero homicidios registrados, la inflación de ceros no explica la sobredispersión de las colas. La variabilidad proviene de subcircuitos con conteos extremadamente elevados de violencia criminal (e.g. Trinitaria, Sur). Por ello, ZIP sigue teniendo métricas de generalización muy elevadas (WAIC $\\approx 6108$).
-                3. **Selección del Modelo Binomial Negativo / BYM2:** Al flexibilizar la relación media-varianza de forma cuadrática y aislar el ruido espacial del patrón estructurado vecino (mediante BYM2), ambos modelos reducen el número efectivo de parámetros ($p_{\\text{WAIC}}$ de 252 a 124) y ofrecen la máxima verosimilitud predictiva esperada (WAIC óptimo de $\\approx 4056$).
-                """)
+                    st.warning("⚠️ La tabla de comparación de modelos (`tabla_comparacion_modelos_bayesiana.xlsx`) aún no ha sido generada. Ejecuta `python run_pipeline.py` en la terminal para ajustar formalmente los 4 modelos mediante NUTS.")
             
         # Pestaña 5: Mapas Bayesianos
         with subtab_mapas:
             st.subheader("Cartografía Temática de Riesgo y Probabilidades Bayesianas")
             st.markdown("Visualización de las estimaciones posteriores mapeadas sobre los subcircuitos de Guayaquil.")
             
-            if len(sub_codes_loc) > 0 and gdf_subcircuitos is not None:
-                # Calcular métricas del riesgo relativo posterior (RR = exp(phi))
-                phi_vals = trace.posterior['phi'].values # (chains, draws, subcircuitos)
-                rr_vals = np.exp(phi_vals)
+            if len(sub_codes_loc) > 0 and gdf_subcircuitos is not None and trace is not None:
+                # Calcular métricas del riesgo relativo posterior estandarizado sobre la media cantonal (Clayton & Kaldor, 1987)
+                spatial_var = 'phi' if 'phi' in trace.posterior else ('psi' if 'psi' in trace.posterior else 'spatial_total')
+                phi_vals = trace.posterior[spatial_var].values # (chains, draws, subcircuitos)
+                exp_phi = np.exp(phi_vals)
+                # Estandarización sobre la media espacial de los subcircuitos
+                rr_vals = exp_phi / np.mean(exp_phi, axis=-1, keepdims=True)
                 
                 rr_mediana = np.median(rr_vals, axis=(0, 1))
                 rr_media = np.mean(rr_vals, axis=(0, 1))

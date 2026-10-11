@@ -119,18 +119,39 @@ def run_stage2(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(by='fecha_infraccion_dt').reset_index(drop=True)
     df['ID_Homicidio'] = [f"MV-GYE-{i+1:05d}" for i in range(len(df))]
     
+    # Quitar columna Antecedentes si existe o registrar su exclusión por 100% nula
+    missing_antecedentes = df['Antecedentes'].isnull().sum() if 'Antecedentes' in df.columns else len(df)
+    if 'Antecedentes' in df.columns:
+        logger.info(f"Columna 'Antecedentes' vacía en el 100% de los registros ({missing_antecedentes}/{cleaned_rows}). Se excluye formalmente del análisis.")
+        df = df.drop(columns=['Antecedentes'])
+
     # 6. Reporte de Calidad de Datos
+    missing_edad = df[config.COL_EDAD].isnull().sum()
+    valid_edad = cleaned_rows - missing_edad
+    
+    # Validar eventos sin subcircuito
+    sin_subcircuito = df[config.COL_COD_SUBCIRCUITO].isnull().sum()
+    logger.info(f"Eventos sin subcircuito detectados: {sin_subcircuito} de {cleaned_rows}")
+
     quality_summary = {
         "Métrica": [
-            "Registros Iniciales",
+            "Registros Iniciales (Excel crudo)",
             "Duplicados Eliminados",
             "Coordenadas Nulas Eliminadas",
             "Coordenadas Fuera de Bounding Box Eliminadas",
-            "Registros Limpios Finales",
-            "Valores Faltantes en Edad",
-            "Valores Faltantes en Arma",
-            "Valores Faltantes en Presunto Móvil",
-            "Valores Faltantes en Antecedentes"
+            "Registros Limpios Finales (N total)",
+            "Valores Faltantes en Edad (NaN)",
+            "Valores Válidos en Edad (n reportado)",
+            "Valores Faltantes en Antecedentes (100% - Excluido)",
+            "Eventos sin Subcircuito (post-cruce)",
+            "Víctimas Hombres",
+            "Víctimas Mujeres",
+            "Víctimas No Determinadas",
+            "Total Suma Sexo (Control)",
+            "Homicidios Año 2024 (Año completo)",
+            "Homicidios Año 2025 (Año completo)",
+            "Homicidios Año 2026 (Solo Enero)",
+            "Total Suma Temporal (Control)"
         ],
         "Valor": [
             initial_rows,
@@ -138,10 +159,18 @@ def run_stage2(df: pd.DataFrame) -> pd.DataFrame:
             missing_coords_count,
             out_of_box_count,
             cleaned_rows,
-            df[config.COL_EDAD].isnull().sum(),
-            df[config.COL_ARMA].isnull().sum(),
-            df[config.COL_PRESUN_MOTIVACION].isnull().sum(),
-            df['Antecedentes'].isnull().sum() if 'Antecedentes' in df.columns else 0
+            missing_edad,
+            valid_edad,
+            missing_antecedentes,
+            sin_subcircuito,
+            (df[config.COL_SEXO] == 'HOMBRE').sum(),
+            (df[config.COL_SEXO] == 'MUJER').sum(),
+            (df[config.COL_SEXO] == 'NO DETERMINADO').sum(),
+            len(df),
+            (df['Anio'] == 2024).sum(),
+            (df['Anio'] == 2025).sum(),
+            (df['Anio'] == 2026).sum(),
+            len(df)
         ]
     }
     df_quality = pd.DataFrame(quality_summary)

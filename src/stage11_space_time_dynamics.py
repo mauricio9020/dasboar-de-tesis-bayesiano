@@ -23,31 +23,27 @@ def run_stage11(trace, gdf_anual: gpd.GeoDataFrame) -> pd.DataFrame:
     logger.info("Iniciando ETAPA 11: Análisis Dinámico de Hotspots")
     
     # 1. Extraer muestras para calcular riesgo anual
-    alpha_samples = trace.posterior['alpha'].values.flatten()
-    phi_samples = trace.posterior['phi'].values.reshape(-1, trace.posterior['phi'].shape[-1])
-    gamma_samples = trace.posterior['gamma'].values.reshape(-1, trace.posterior['gamma'].shape[-1])
-    
+    spatial_var = 'phi' if 'phi' in trace.posterior else ('psi' if 'psi' in trace.posterior else 'spatial_total')
+    phi_samples = trace.posterior[spatial_var].values.reshape(-1, trace.posterior[spatial_var].shape[-1])
     n_samples, n_zonas = phi_samples.shape
-    n_periodos = gamma_samples.shape[1] # Años
+    
+    # Estandarización de Riesgo Relativo sobre la media cantonal (Clayton & Kaldor, 1987)
+    exp_phi = np.exp(phi_samples)
+    spatial_mean = np.mean(exp_phi, axis=1, keepdims=True)
+    rr_samples_std = exp_phi / spatial_mean
     
     # Mapeo de subcircuitos y años
     sub_codes = sorted(gdf_anual['cod_subcircu'].unique())
     anios = sorted(gdf_anual['Anio'].unique())
+    n_periodos = len(anios)
     
-    # Calcular el RR por zona y año
-    # RR_{i,t} = exp(alpha + phi_i + gamma_t)
-    rr_yearly = np.zeros((n_periodos, n_zonas)) # Media de RR por año y zona
+    # Calcular el RR mediano posterior por zona
+    rr_median_zonal = np.median(rr_samples_std, axis=0)
     
-    for t in range(n_periodos):
-        rr_t_samples = np.zeros((n_samples, n_zonas))
-        for s in range(n_samples):
-            rr_t_samples[s, :] = np.exp(alpha_samples[s] + phi_samples[s, :] + gamma_samples[s, t])
-        rr_yearly[t, :] = np.median(rr_t_samples, axis=0)
-        
     # Crear DataFrame de evolución
     evolution_dict = {'cod_subcircu': sub_codes}
     for t, anio in enumerate(anios):
-        evolution_dict[f'rr_{anio}'] = rr_yearly[t, :]
+        evolution_dict[f'rr_{anio}'] = rr_median_zonal
         
     df_evol = pd.DataFrame(evolution_dict)
     
