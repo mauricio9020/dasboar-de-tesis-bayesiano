@@ -204,7 +204,12 @@ def load_pymc_trace():
             shutil.copy2(trace_path, temp_trace_path)
             return az.from_netcdf(temp_trace_path)
         except Exception:
-            return az.from_netcdf(trace_path)
+            try:
+                return az.from_netcdf(trace_path)
+            except Exception as e:
+                import logging
+                logging.warning(f"No se pudo cargar la traza bayesiana desde NetCDF: {e}")
+                return None
     return None
 
 trace = load_pymc_trace()
