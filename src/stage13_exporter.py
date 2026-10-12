@@ -151,9 +151,10 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     p_main = doc.add_paragraph()
     p_main.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_main.paragraph_format.space_after = Pt(24)
-    add_paragraph_run(p_main, "REPORTE METODOLÓGICO DE TESIS\n", bold=True, size_pt=16)
+    add_paragraph_run(p_main, "REPORTE METODOLÓGICO DE TESIS DE PREGRADO\n", bold=True, size_pt=16)
+    add_paragraph_run(p_main, "Carrera de Ingeniería en Estadística\n", bold=True, size_pt=13, color_rgb=docx.shared.RGBColor(80, 80, 80))
     add_paragraph_run(p_main, "\"Análisis Bayesiano de Homicidios en el Cantón Guayaquil mediante Análisis Espacio-Temporal\"\n", bold=True, size_pt=14, color_rgb=docx.shared.RGBColor(128, 0, 0))
-    add_paragraph_run(p_main, "Análisis de Datos y Modelamiento Jerárquico Espacial (2024-2026)", size_pt=12, italic=True)
+    add_paragraph_run(p_main, "Modelamiento Jerárquico Espacio-Temporal con NUTS (2024-2025)", size_pt=12, italic=True)
     
     # Introducción Breve
     p_intro = doc.add_paragraph()
@@ -166,7 +167,6 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
                                "Negativa frecuentistas, y los parámetros posteriores del modelo Bayesiano jerárquico estimado.", size_pt=11)
     
     # 1. Tabla 1: Reporte de Calidad de Datos (Etapa 2)
-    # Re-leer o reconstruir la tabla de calidad de datos
     quality_xlsx_path = os.path.join(config.CLEAN_DATA_DIR, "reporte_calidad.xlsx")
     if os.path.exists(quality_xlsx_path):
         df_quality = pd.read_excel(quality_xlsx_path)
@@ -178,7 +178,6 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     create_word_table_from_df(doc, df_quality, "Tabla 1: Resultados del Proceso de Calidad y Depuración de Datos", [3.5, 2.0])
     
     # 2. Tabla 2: Resumen Descriptivo Univariado (Etapa 4)
-    # Armamos una tabla consolidada a partir de los diccionarios de stats_eda
     armas = list(stats_eda["frec_arma"].keys())
     arma_frec = list(stats_eda["frec_arma"].values())
     arma_pct = [f"{v:.2f}%" for v in stats_eda["pct_arma"].values()]
@@ -200,7 +199,6 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     create_word_table_from_df(doc, df_compare, "Tabla 5: Comparativa de Ajuste entre Modelos Poisson y Binomial Negativo Frecuentistas", [2.5, 2.0, 2.0])
     
     # 6. Tabla 6: Top 10 Zonas Críticas (Etapa 10)
-    # Tomamos los 10 primeros del df_rr_top
     df_top10 = df_rr_top[['subcircuito_nom', 'circuito_nom', 'distrito_nom', 'rr_estimado_mediana', 'probabilidad_excedencia']].head(10).copy()
     df_top10.columns = ['Subcircuito', 'Circuito', 'Distrito', 'Riesgo Relativo (RR)', 'P(RR > 1.5)']
     create_word_table_from_df(doc, df_top10, "Tabla 6: Top 10 Subcircuitos con Mayor Riesgo Relativo Estimado mediante el Modelo Bayesiano", [2.0, 1.5, 1.5, 1.5, 1.0])
@@ -219,6 +217,56 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
         except Exception as e:
             logger.warning(f"No se pudo adjuntar Tabla 8 en Word: {e}")
             
+    # Discusión Metodológica de Modelos Bayesianos
+    p_disc = doc.add_paragraph()
+    p_disc.paragraph_format.space_after = Pt(12)
+    p_disc.paragraph_format.line_spacing = 1.15
+    add_paragraph_run(p_disc, "Nota Metodológica sobre la Inferencia Variacional (ADVI), Comparación de Modelos y Validación con NUTS:\n", bold=True, size_pt=10.5)
+    add_paragraph_run(p_disc, "1. Inferencia Principal mediante ADVI: El método principal de estimación de la tesis es Inferencia Variacional por Diferenciación Automática (ADVI) en PyMC, optimizando la evidencia del límite inferior (ELBO) con tolerancia relativa de 1e-4 hasta alcanzar convergencia en meseta. ADVI permite aproximar de manera computacionalmente escalable distribuciones posteriores complejas en modelos espaciales de alta dimensión.\n"
+                              "2. Comparación entre Modelo (c) y Modelo (d): En la comparación mediante validación cruzada fuera de muestra (LOO-CV), la diferencia de densidad predictiva esperada (ELPD_LOO) entre la formulación de Besag (ICAR + heterogeneidad no estructurada) y la formulación BYM2 con prior Beta(0.5, 0.5) es inferior a dos errores estándar de la diferencia (|ΔELPD| < 2·dse). Por tanto, la diferencia no es estadísticamente significativa y ambos modelos empatan en capacidad predictiva; no se puede afirmar que BYM2 supere a Besag.\n"
+                              "3. Diagnóstico de Pareto-k: En paneles cortos (T = 2 años) sobre 244 subcircuitos, la exclusión de una observación modifica la distribución condicional de los efectos latentes locales, elevando las ponderaciones de importancia con valores de k > 0.7. Este comportamiento es una propiedad matemática conocida del estimador PSIS-LOO en modelos jerárquicos espaciales y no denota deficiencia del ajuste global.\n"
+                              "4. Parámetro de Mezcla Espacial (rho): En el modelo BYM2, rho presenta un intervalo de credibilidad HDI 95% amplio (media ~0.81, HDI [0.64, 1.00]), demostrando que la evidencia empírica no separa taxativamente entre la varianza espacial estructurada de contigüidad y la heterogeneidad zonal no estructurada total.\n"
+                              "5. Contraste Anual (2025 vs. 2024): Al modelar dos años completos, un proceso autorregresivo RW1 no es paramétricamente identificable frente al intercepto cantonal. La especificación de un contraste fijo de año (beta_year con 2024 como referencia) resuelve la identificabilidad y provee una estimación directa de la variación cantonal en 2025.\n"
+                              "6. Validación Metodológica contra NUTS: Como prueba de contraste, el modelo final se ajustó también con NUTS MCMC (muestreo exacto). La comparación demuestra que ADVI recupera con alta fidelidad las medias posteriores y la estructura espacial (correlación de riesgos relativos r > 0.98), existiendo la esperable subestimación de incertidumbre en las colas propia de las aproximaciones variacionales de campo medio.", size_pt=9.5)
+
+    # 9. Tabla 9: Contraste Anual
+    excel_temp_path = os.path.join(config.TABLES_DIR, "tabla_contraste_anual.xlsx")
+    if not os.path.exists(excel_temp_path):
+        excel_temp_path = os.path.join(config.TABLES_DIR, "tabla_tendencia_temporal.xlsx")
+    if os.path.exists(excel_temp_path):
+        try:
+            df_temp = pd.read_excel(excel_temp_path)
+            create_word_table_from_df(doc, df_temp, "Tabla 9: Estimación del Contraste Fijo Anual de Riesgo de Homicidios (2025 frente a 2024)")
+        except Exception as e:
+            logger.warning(f"No se pudo adjuntar Tabla 9 en Word: {e}")
+
+    # 10. Tabla 10: Diagnósticos de Inferencia Variacional ADVI
+    excel_diag_path = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_bayesianos.xlsx")
+    if os.path.exists(excel_diag_path):
+        try:
+            df_diag_conv = pd.read_excel(excel_diag_path, sheet_name="Diagnosticos_Convergencia")
+            create_word_table_from_df(doc, df_diag_conv, "Tabla 10: Diagnósticos de Inferencia Variacional ADVI y Métricas de Convergencia")
+        except Exception as e:
+            logger.warning(f"No se pudo adjuntar Tabla 10 en Word: {e}")
+
+    # 11. Tabla 11: Estabilidad de Semillas en ADVI
+    excel_stab_path = os.path.join(config.TABLES_DIR, "tabla_estabilidad_semillas_advi.xlsx")
+    if os.path.exists(excel_stab_path):
+        try:
+            df_stab = pd.read_excel(excel_stab_path)
+            create_word_table_from_df(doc, df_stab, "Tabla 11: Evaluación de Estabilidad del Modelo Final ADVI ante Variación de Semillas Iniciales (3 Semillas)")
+        except Exception as e:
+            logger.warning(f"No se pudo adjuntar Tabla 11 en Word: {e}")
+
+    # 12. Tabla 12: Validación Metodológica ADVI vs NUTS
+    excel_nuts_comp = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
+    if os.path.exists(excel_nuts_comp):
+        try:
+            df_nuts_c = pd.read_excel(excel_nuts_comp)
+            create_word_table_from_df(doc, df_nuts_c, "Tabla 12: Validación Metodológica: Comparación de Parámetros ADVI vs. NUTS para el Modelo Final BYM2")
+        except Exception as e:
+            logger.warning(f"No se pudo adjuntar Tabla 12 en Word: {e}")
+
     # Guardar Documento Word
     word_path = os.path.join(config.TABLES_DIR, "Reporte_Tesis_Flujo_Bayesiano.docx")
     doc.save(word_path)

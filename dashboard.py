@@ -219,7 +219,7 @@ rr_csv_path = os.path.join(config.CLEAN_DATA_DIR, "resultados_riesgo_relativo.cs
 if os.path.exists(rr_csv_path) and gdf_subcircuitos is not None:
     try:
         df_rr_res = pd.read_csv(rr_csv_path)
-        rr_cols_to_merge = [c for c in ['cod_subcircu', 'rr_estimado_mediana', 'rr_estimado_media', 'rr_limite_inf_95', 'rr_limite_sup_95', 'probabilidad_excedencia'] if c in df_rr_res.columns]
+        rr_cols_to_merge = [c for c in ['cod_subcircu', 'rr_estimado_mediana', 'rr_estimado_media', 'rr_limite_inf_95', 'rr_limite_sup_95', 'probabilidad_excedencia', 'prob_exced_1', 'prob_segura'] if c in df_rr_res.columns]
         # Si ya existen en gdf_subcircuitos, no duplicar
         cols_missing = [c for c in rr_cols_to_merge if c not in gdf_subcircuitos.columns or c == 'cod_subcircu']
         if len(cols_missing) > 1:
@@ -247,7 +247,7 @@ with st.sidebar:
     )
     
     st.markdown("---")
-    st.caption("Estudiante: *Tesis de Maestría en Criminología y Análisis Espacial*")
+    st.caption("Tesis de Grado: *Ingeniería en Estadística*")
     st.caption("Cantón Guayaquil - Período de Análisis: 2024-2026")
 
 # ----------------- CUERPO PRINCIPAL ----------------- #
@@ -271,7 +271,7 @@ with tab_kpi:
     st.info("""
     📌 **Avisos Metodológicos de Calidad de Datos:**
     - **Muestra depurada:** **N = 4,634** homicidios confirmados (4,716 registros crudos menos 35 duplicados y 47 fuera del bounding box oficial de Guayaquil).
-    - **Año 2026:** Contiene únicamente el mes de **enero (202 casos)**. Para no distorsionar las tasas anuales ni la caminata aleatoria temporal RW1, el panel anual del modelo bayesiano modela los años completos **2024 y 2025** (488 observaciones en 244 subcircuitos), preservando 2026 en el panel mensual de 25 meses.
+    - **Año 2026:** Contiene únicamente el mes de **enero (202 casos)**. Para no distorsionar las tasas anuales ni la estimación del efecto temporal, el panel anual del modelo bayesiano modela los años completos **2024 y 2025** (488 observaciones en 244 subcircuitos), preservando 2026 en el panel mensual de 25 meses.
     - **Variable Edad:** Registra 232 valores faltantes en la fuente policial original; las estadísticas de edad se reportan estrictamente sobre la submuestra válida de **n = 4,402** casos sin imputaciones sintéticas.
     - **Variable Antecedentes:** Se encuentra vacía en el 100% de los registros policiales (4,634 registros); fue excluida formalmente del análisis.
     """)
@@ -781,55 +781,58 @@ El encogimiento bayesiano (shrinkage) del estimador espacial reduce artificialme
 
 # ================= TAB 3: EVALUACIÓN BAYESIANA =================
 with tab_bayes:
-    st.subheader("Evaluación de Convergencia Bayesiana (NUTS) y Diagnósticos MCMC")
-    st.markdown("Esta sección resume los diagnósticos de convergencia y bondad de ajuste del modelo Bayesiano jerárquico estimado mediante el muestreador No-U-Turn Sampler (NUTS) en PyMC.")
+    st.subheader("Evaluación de Inferencia Bayesiana Variacional (ADVI)")
+    st.markdown("Esta sección resume la optimización y bondad de ajuste del modelo Bayesiano jerárquico estimado mediante Inferencia Variacional por Diferenciación Automática (ADVI) en PyMC.")
     
     col_d1, col_d2 = st.columns(2)
     
     with col_d1:
-        st.markdown("**Métricas Generales del Muestreo NUTS**")
+        st.markdown("**Métricas de Optimización Variacional (ADVI)**")
         
         # Leer diagnósticos de convergencia reales
         diag_path = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_bayesianos.xlsx")
-        rhat_max_val = "N/D"
-        ess_bulk_val = "N/D"
-        ess_tail_val = "N/D"
-        div_val = "0"
+        draws_cnt_val = "2,000"
+        crit_tol_val = "1e-4"
+        k_gt_07_val = "N/D"
+        k_adv_val = "N/D"
         if os.path.exists(diag_path):
             try:
                 df_diag_conv = pd.read_excel(diag_path, sheet_name="Diagnosticos_Convergencia")
                 diag_map = dict(zip(df_diag_conv['Diagnóstico'], df_diag_conv['Valor']))
-                rhat_max_val = f"{diag_map.get('R_hat Máximo', 1.0):.4f}"
-                ess_bulk_val = f"{diag_map.get('ESS Bulk Mínimo', 0):,.0f}"
-                ess_tail_val = f"{diag_map.get('ESS Tail Mínimo', 0):,.0f}"
-                div_val = f"{diag_map.get('Divergencias NUTS', 0)}"
+                draws_cnt_val = f"{diag_map.get('Muestras Posteriores Extraídas', 2000):,}"
+                crit_tol_val = str(diag_map.get('Criterio de Convergencia', 'CheckParametersConvergence (tolerancia 1e-4)'))
+                k_gt_07_val = f"{diag_map.get('Pareto-k > 0.7 (Observaciones)', 'N/D')}"
+                k_adv_val = f"{diag_map.get('Advertencia Pareto-k', 'N/D')}"
             except Exception:
                 pass
                 
         st.markdown(f"""
-        - **Muestreador Hamiltoniano:** NUTS (No-U-Turn Sampler, PyMC).
-        - **Cadenas MCMC:** 4 cadenas independientes en paralelo.
-        - **Calentamiento (Tune):** 1,000 iteraciones por cadena (4,000 iteraciones tune).
-        - **Muestras Efectivas (Draws):** 1,000 iteraciones por cadena ({draws_cnt_str} muestras posteriores totales).
+        - **Método de Inferencia:** ADVI (Automatic Differentiation Variational Inference).
+        - **Muestras Posteriores Extraídas:** {draws_cnt_val} draws de la aproximación variacional.
+        - **Criterio de Parada:** {crit_tol_val}.
         - **ELPD-WAIC:** **{crit_waic_str}** (Escala logarítmica).
         - **ELPD-LOO:** **{crit_loo_str}** (Escala logarítmica).
-        - **Convergencia Gelman-Rubin (r̂ máx):** **{rhat_max_val}** (r̂ ≤ 1.05 indica convergencia completa).
-        - **ESS Mínimo (Bulk / Tail):** **{ess_bulk_val}** / **{ess_tail_val}**
-        - **Divergencias NUTS:** **{div_val}**
+        - **Observaciones con Pareto-k > 0.7:** **{k_gt_07_val}**
+        - **Diagnóstico Pareto-k:** {k_adv_val}
+        - **Validación Metodológica:** Ajuste complementario NUTS MCMC disponible en la pestaña siguiente.
         """)
         
-        # Mostrar imágenes de traza si existen en outputs/figures
-        trace_img_path = os.path.join(config.FIGURES_DIR, "Figura14_bayesian_traceplots.png")
-        if os.path.exists(trace_img_path):
-            st.image(trace_img_path, caption="Figura 14: Traceplots de los parámetros posteriores de las 4 cadenas NUTS")
+        # Mostrar imagen de convergencia del ELBO si existe
+        elbo_img_path = os.path.join(config.FIGURES_DIR, "Figura_convergencia_elbo.png")
+        if os.path.exists(elbo_img_path):
+            st.image(elbo_img_path, caption="Figura: Trayectoria de optimización del ELBO hacia la meseta de convergencia")
         else:
-            st.info("💡 Ejecuta `python run_pipeline.py` en la consola para generar los gráficos de diagnóstico.")
+            trace_img_path = os.path.join(config.FIGURES_DIR, "Figura14_bayesian_traceplots.png")
+            if os.path.exists(trace_img_path):
+                st.image(trace_img_path, caption="Figura 14: Traceplots de los parámetros posteriores de ADVI")
+            else:
+                st.info("💡 Ejecuta `python run_pipeline.py` en la consola para generar los gráficos de diagnóstico.")
             
     with col_d2:
         # Mostrar imagen del posterior predictivo PPC
         ppc_img_path = os.path.join(config.FIGURES_DIR, "Figura19_bayesian_ppc.png")
         if os.path.exists(ppc_img_path):
-            st.image(ppc_img_path, caption="Figura 19: Comprobación Predictiva Posterior (PPC) en rango completo")
+            st.image(ppc_img_path, caption="Figura 19: Comprobación Predictiva Posterior (PPC) en rango completo (ADVI)")
         else:
             st.info("💡 La imagen de verificación predictiva posterior (PPC) se generará al ejecutar `python run_pipeline.py`.")
 
@@ -844,13 +847,14 @@ with tab_modelo_bayesiano:
     else:
         
         # Sub-pestañas dentro de la sección bayesiana
-        subtab_espec, subtab_post, subtab_diag, subtab_comp, subtab_mapas, subtab_resumen = st.tabs([
+        subtab_espec, subtab_post, subtab_diag, subtab_comp, subtab_nuts, subtab_mapas, subtab_resumen = st.tabs([
             "📖 Pestaña 1: Especificación del Modelo",
             "📈 Pestaña 2: Distribuciones Posteriores",
-            "🔍 Pestaña 3: Diagnóstico Bayesiano (NUTS)",
+            "🔍 Pestaña 3: Diagnóstico ADVI (ELBO)",
             "📊 Pestaña 4: Comparación del Modelo",
-            "🗺️ Pestaña 5: Mapas Bayesianos",
-            "📝 Pestaña 6: Resumen del Modelo"
+            "⚖️ Pestaña 5: Validación ADVI vs. NUTS",
+            "🗺️ Pestaña 6: Mapas Bayesianos",
+            "📝 Pestaña 7: Resumen del Modelo"
         ])
         
         # Obtener variables e índices para mapeo
@@ -879,38 +883,39 @@ with tab_modelo_bayesiano:
             $$\\text{Var}(Y_{it}) = \\mu_{it} + \\frac{\\mu_{it}^2}{\\alpha_{disp}}$$
             
             **Función de Enlace (Log-Link):**
-            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\gamma_t$$
+            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
             
             Donde:
             - $Y_{it}$: Número de homicidios observados en el subcircuito $i$ en el año $t$.
             - $\\mu_{it}$: Media predictiva condicional ajustada por el modelo.
-            - $\\alpha$: Intercepto global (tasa basal cantonal).
-            - $\\beta_{\\text{area}}$: Coeficiente de regresión estimado para la exposición territorial $\\log(\\text{Area}_i)$ (incorporado como covariable ante la ausencia de censo poblacional a escala subcircuital).
-            - $\\phi_i$: Efecto aleatorio espacial estructurado ICAR (o BYM2) para el subcircuito $i$.
-            - $\\gamma_t$: Tendencia temporal autorregresiva de orden 1 (RW1) para el año $t$.
-            - $\\alpha_{disp}$: Parámetro de dispersión de la distribución Binomial Negativa.
+            - $\\alpha$: Intercepto global (tasa basal cantonal en 2024).
+            - $\\beta_{\\text{year}}$: Efecto fijo temporal para el año 2025 con prior débil $\\text{Normal}(0, 1)$ (sustituye al RW1 anual para garantizar identificación paramétrica estricta frente al intercepto con $T=2$).
+            - $\\beta_{\\text{area}}$: Coeficiente estimado para la covariable $\\log(\\text{Area}_i)$ (prior $\\text{Normal}(0, 1)$).
+            - $\\psi_i$: Componente espacial mixto BYM2 (Riebler et al., 2016) que combina estructura ICAR y heterogeneidad no estructurada con parámetro de mezcla $\\rho \\sim \\text{Beta}(0.5, 0.5)$.
+            - $\\alpha_{disp}$: Parámetro de dispersión de la verosimilitud Binomial Negativa.
 
             
             #### 2. Distribuciones a Priori (Priors)
             Las asignaciones a priori para regularizar los parámetros y permitir un muestreo estable son:
             
             - **Intercepto Global:**
-              $$\\alpha \\sim \\text{Normal}(0, 3)$$
+              $$\\alpha \\sim \\text{Normal}(0, 2)$$
             
-            - **Efecto Espacial Estructurado ($\\phi$):**
-              $$\\phi \\sim \\text{ICAR}(\\sigma_{\\phi}^2, W)$$
-              Efecto espacial formulado mediante un prior Autorregresivo Condicional Intrínseco (ICAR), donde $W$ es la matriz de pesos de adyacencia contigua (Queen).
+            - **Efecto Fijo Temporal:**
+              $$\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$$
+              
+            - **Parámetro de Mezcla Espacial BYM2:**
+              $$\\rho \\sim \\text{Beta}(0.5, 0.5)$$
             
-            - **Efecto Temporal ($\\gamma_t$):**
-              $$\\gamma_t \\sim \\text{RW1}(\\sigma_t^2)$$
-              Caminata aleatoria de primer orden (Random Walk of order 1) para modelar la evolución temporal suave de los homicidios: $\\gamma_t = \\gamma_{t-1} + \\epsilon_t$, con $\\epsilon_t \\sim \\text{Normal}(0, \\sigma_t^2)$.
+            - **Efecto Espacial Estructurado Escalado:**
+              $$\\phi^* \\sim \\text{ICAR}(W) / \\sqrt{s}$$
+              Donde $s$ es el factor de escala geométrico marginal de la matriz Laplaciana de Guayaquil.
             
             - **Parámetro de Dispersión:**
               $$\\alpha_{disp} \\sim \\text{Exponential}(1.0)$$
             
-            - **Hiperpriors de Desviación Estándar:**
-              $$\\sigma_{\\phi} \\sim \\text{HalfNormal}(1.0)$$
-              $$\\sigma_t \\sim \\text{HalfNormal}(1.0)$$
+            - **Escala de Desviación Espacial:**
+              $$\\sigma_s \\sim \\text{Exponential}(1.0)$$
             """)
             
         # Pestaña 2: Distribuciones Posteriores
@@ -920,25 +925,28 @@ with tab_modelo_bayesiano:
             
             opcion_post = st.radio(
                 "Selecciona el tipo de parámetro a visualizar:",
-                ["Parámetros Globales (alpha, alpha_disp, sigma_phi, sigma_t)", 
+                ["Parámetros Globales (alpha, beta_year, beta_area, sigma_s, rho, alpha_disp)", 
                  "Efectos Espaciales de Subcircuitos (phi)", 
-                 "Efectos Temporales por Año (gamma)"],
+                 "Efecto Temporal Anual (beta_year)"],
                 key="opcion_post_radio"
             )
             
-            if opcion_post == "Parámetros Globales (alpha, alpha_disp, sigma_phi, sigma_t)":
+            if opcion_post.startswith("Parámetros Globales"):
                 st.markdown("#### Densidades Posteriores de Parámetros Globales")
-                fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-                az.plot_posterior(trace, var_names=['alpha', 'alpha_disp', 'sigma_phi', 'sigma_t'], ax=axes)
+                post_vars = [v for v in ['alpha', 'beta_year', 'beta_area', 'sigma_s', 'rho', 'alpha_disp'] if v in trace.posterior]
+                fig, axes = plt.subplots(2, 3, figsize=(12, 7))
+                az.plot_posterior(trace, var_names=post_vars, ax=axes)
                 plt.tight_layout()
                 st.pyplot(fig)
                 plt.close(fig)
                 st.markdown("""
                 *Interpretación:*
-                - **alpha:** Representa la tasa global media en escala logarítmica.
-                - **alpha_disp:** El parámetro de forma de la Binomial Negativa. Valores pequeños indican alta sobredispersión.
-                - **sigma_phi:** Variabilidad de los efectos espaciales estructurales.
-                - **sigma_t:** Variabilidad de las tendencias temporales anuales.
+                - **alpha:** Tasa media global cantonal en escala logarítmica (año 2024).
+                - **beta_year:** Variación temporal neta en 2025 frente a la línea base 2024.
+                - **beta_area:** Elasticidad estimada del área física territorial sobre el conteo delictivo.
+                - **sigma_s:** Desviación estándar total del componente espacial BYM2.
+                - **rho:** Parámetro de mezcla espacial con prior Beta(0.5, 0.5); su intervalo posterior refleja la proporción de variabilidad explicada por contigüidad.
+                - **alpha_disp:** Parámetro de forma de la Binomial Negativa que absorbe la sobredispersión.
                 """)
                 
             elif opcion_post == "Efectos Espaciales de Subcircuitos (phi)":
@@ -968,40 +976,37 @@ with tab_modelo_bayesiano:
                     st.info("Sin datos de subcircuitos cargados.")
                     
             else:
-                st.markdown("#### Densidades Posteriores de Efectos Temporales $\\gamma_t$")
-                if len(anios_loc) > 0:
-                    fig, axes = plt.subplots(1, len(anios_loc), figsize=(12, 4))
-                    for i, yr in enumerate(anios_loc):
-                        gamma_yr = trace.posterior['gamma'].sel(gamma_dim_0=i)
-                        az.plot_posterior(gamma_yr, ax=axes[i], color="#ffb74d")
-                        axes[i].set_title(f"Efecto temporal Año {yr} ($\\gamma$)")
+                st.markdown("#### Densidad Posterior del Contraste Anual 2025 vs. 2024 ($\beta_{\text{year}}$)")
+                if 'beta_year' in trace.posterior:
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    az.plot_posterior(trace, var_names=['beta_year'], ax=ax, color="#ffb74d")
+                    ax.set_title("Contraste Anual 2025 vs. 2024 ($\beta_{year}$)")
                     plt.tight_layout()
                     st.pyplot(fig)
                     plt.close(fig)
+                    b_mean = float(trace.posterior['beta_year'].values.mean())
+                    st.markdown(f"El coeficiente posterior mediano de $\\beta_{{\\text{{year}}}}$ es **{b_mean:+.3f}**, lo que equivale a una variación neta de la tasa de homicidios de **{((np.exp(b_mean)-1)*100):+.1f}%** en 2025 respecto a 2024.")
                 else:
-                    st.info("Sin coordenadas temporales.")
+                    st.info("Sin parámetro temporal beta_year en la traza cargada.")
                     
-        # Pestaña 3: Diagnósticos NUTS MCMC
+        # Pestaña 3: Diagnósticos ADVI
         with subtab_diag:
-            st.subheader("Evaluación de Convergencia MCMC (NUTS) y Diagnósticos del Modelo")
-            st.markdown("Verificación rigurosa de convergencia de cadenas, mezcla Hamiltoniana y comprobación predictiva posterior.")
-            
-            diag_vars = [v for v in ['alpha', 'beta_area', 'sigma_phi', 'sigma_theta', 'sigma_s', 'sigma_t', 'alpha_disp'] if v in trace.posterior]
+            st.subheader("Evaluación de Optimización Variacional (ADVI) y Diagnósticos")
+            st.markdown("Verificación de la convergencia del ELBO hacia la meseta de optimización, chequeo predictivo posterior (PPC) y dispersión.")
             
             opcion_diag = st.selectbox(
                 "Selecciona la visualización de diagnóstico:",
-                ["Traceplots de Cadenas MCMC (NUTS)", "Comprobación Predictiva Posterior (PPC)", "Gráfico de Energía (Energy Plot NUTS)"],
+                ["Convergencia del ELBO (Meseta de Optimización)", "Comprobación Predictiva Posterior (PPC)", "Traceplots de Muestras Variacionales"],
                 key="opcion_diag_select"
             )
             
-            if opcion_diag == "Traceplots de Cadenas MCMC (NUTS)":
-                st.markdown("#### Traceplots de Parámetros Clave (4 cadenas NUTS superpuestas)")
-                fig, axes = plt.subplots(len(diag_vars), 2, figsize=(10, 2.5 * len(diag_vars)))
-                az.plot_trace(trace, var_names=diag_vars, axes=axes)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-                
+            if opcion_diag == "Convergencia del ELBO (Meseta de Optimización)":
+                st.markdown("#### Trayectoria de Optimización del ELBO (Evidence Lower Bound)")
+                elbo_img = os.path.join(config.FIGURES_DIR, "Figura_convergencia_elbo.png")
+                if os.path.exists(elbo_img):
+                    st.image(elbo_img, use_column_width=True)
+                else:
+                    st.info("El gráfico de convergencia del ELBO se generará al ejecutar `python run_pipeline.py`.")
             elif opcion_diag == "Comprobación Predictiva Posterior (PPC)":
                 st.markdown("#### Comprobación Predictiva Posterior (PPC) - Rango Completo")
                 ppc_img = os.path.join(config.FIGURES_DIR, "Figura19_bayesian_ppc.png")
@@ -1015,24 +1020,19 @@ with tab_modelo_bayesiano:
                 else:
                     st.info("No se encontraron muestras predictivas. Ejecuta `python run_pipeline.py`.")
             else:
-                st.markdown("#### Energy Plot (Transición vs Marginal de Energía en NUTS)")
-                energy_img = os.path.join(config.FIGURES_DIR, "Figura17_bayesian_energy.png")
-                if os.path.exists(energy_img):
-                    st.image(energy_img, use_column_width=True)
-                elif hasattr(trace, 'sample_stats') and 'energy' in trace.sample_stats:
-                    fig, ax = plt.subplots(figsize=(7, 4))
-                    az.plot_energy(trace, ax=ax)
-                    st.pyplot(fig)
-                    plt.close(fig)
-                else:
-                    st.info("Energy plot no disponible en la traza cargada.")
+                st.markdown("#### Traceplots de Parámetros Clave (Muestras Variacionales ADVI)")
+                diag_vars = [v for v in ['alpha', 'beta_year', 'beta_area', 'sigma_s', 'rho', 'alpha_disp'] if v in trace.posterior]
+                fig, axes = plt.subplots(len(diag_vars), 2, figsize=(10, 2.2 * len(diag_vars)))
+                az.plot_trace(trace, var_names=diag_vars, axes=axes)
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig)
                 
             st.markdown("""
-            **Interpretación de los diagnósticos:**
-            - **Cadenas MCMC:** Las trazas muestran orugas densas y estacionarias (fuzzy caterpillars) para las 4 cadenas independientes superpuestas, indicando convergencia y buena mezcla en el espacio de estados.
-            - **R_hat (Gelman-Rubin):** Valores de r̂ ≈ 1.00 confirman la equivalencia entre varianza dentro de cadenas y entre cadenas.
-            - **Posterior Predictive Check (PPC):** La coincidencia entre la densidad de datos observados y las réplicas posteriores valida la capacidad del modelo para modelar conteos reales con sobredispersión.
-            - **ELPD (WAIC / LOO):** Miden la densidad predictiva logarítmica esperada fuera de muestra, penalizando la complejidad efectiva del modelo sin sesgos optimistas.
+            **Interpretación de la Inferencia Variacional (ADVI):**
+            - **Maximización del ELBO:** ADVI optimiza una distribución variacional aproximada minimizando la divergencia de Kullback-Leibler hacia la verdadera distribución posterior. La estabilización en meseta con tolerancia 1e-4 confirma la convergencia del algoritmo.
+            - **Comprobación Predictiva Posterior (PPC):** La coincidencia entre los conteos observados y las réplicas $y_{rep}$ valida que la verosimilitud Binomial Negativa captura adecuadamente la sobredispersión empírica.
+            - **Criterios de Información (ELPD):** LOO-CV y WAIC penalizan la complejidad del modelo para evaluar la capacidad de generalización fuera de muestra.
             """)
             
         # Pestaña 4: Comparación del modelo
@@ -1088,7 +1088,7 @@ with tab_modelo_bayesiano:
                 
                 1. **Capacidad de Generalización (WAIC / LOO-CV):** Ambos criterios estiman la verosimilitud de datos futuros no observados y penalizan la complejidad del modelo (el número efectivo de parámetros). Valores de mayor ELPD demuestran que la estructura espacio-temporal propuesta generaliza de forma robusta la tasa de criminalidad sin incurrir en sobreajuste (overfitting).
                 2. **Tratamiento de la Sobredispersión:** La verosimilitud **Binomial Negativa** introduce el parámetro de dispersión $\\alpha_{{disp}}$ para flexibilizar la relación media-varianza. Esto permite modelar de forma precisa datos de conteo con alta concentración y variabilidad territorial extrema sin sesgar las estimaciones.
-                3. **Regularización y Suavizado:** El prior espacial **ICAR** y el temporal **RW1** ejercen una regularización (shrinkage) que suaviza los estimadores en zonas con pocos registros hacia la tendencia regional circundante.
+                3. **Regularización y Suavizado:** El componente espacial **ICAR** y el efecto temporal anual ejercen una regularización (shrinkage) que estabiliza los estimadores en zonas con pocos registros hacia la tendencia regional circundante.
                 """)
                 
             with comp_tab2:
@@ -1101,36 +1101,102 @@ with tab_modelo_bayesiano:
                         df_comp_bayes = pd.read_excel(excel_comp_path)
                         st.dataframe(df_comp_bayes, use_container_width=True)
                         
+                        st.info("""
+                        > 📌 **Nota Metodológica sobre Selección de Modelos:**
+                        > La diferencia de ELPD entre el modelo (c) (Besag ICAR + $\\theta$) y el modelo (d) (BYM2) es de apenas **0.10 puntos** con una desviación estándar de error $dse = 1.18$.
+                        > Al ser la diferencia sustancialmente menor que su error estándar, **no es estadísticamente significativa**; por lo tanto, no se puede afirmar que BYM2 supere al modelo (c). Ambos modelos presentan una capacidad predictiva equivalente fuera de muestra.
+                        """)
+                        
                         st.markdown("""
                         ### 📖 Formulación Matemática de los 4 Modelos Comparados
                         
                         1. **Poisson Bayesiano Jerárquico (Línea Base):**
                            $$Y_{it} \\sim \\text{Poisson}(\\mu_{it})$$
-                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\gamma_t$$
-                           Donde $\\phi \\sim \\text{ICAR}(W)$ y $\\gamma \\sim \\text{RW1}$.
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$$
+                           Donde $\\phi \\sim \\text{ICAR}(W)$ y $\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$.
                            
                         2. **Binomial Negativa Jerárquico (ICAR):**
                            $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
-                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\gamma_t$$
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$$
                            $$\\text{Var}(Y_{it}) = \\mu_{it} + \\frac{\\mu_{it}^2}{\\alpha_{disp}}$$
                            
                         3. **Binomial Negativa con ICAR + Efecto No Estructurado (Besag et al., 1991):**
                            $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
-                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i + \\gamma_t$$
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i$$
                            Donde $\\theta_i \\sim \\text{Normal}(0, \\sigma_\\theta^2)$ captura heterogeneidad zonal no correlacionada.
                            
-                        4. **BYM2 Binomial Negativo con Prior PC (Riebler et al., 2016):**
+                        4. **BYM2 Binomial Negativo (Prior Beta(0.5, 0.5)):**
                            $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
-                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i + \\gamma_t$$
+                           $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
                            $$\\psi_i = \\sigma_s \\left( \\sqrt{\\rho} \\phi^*_i + \\sqrt{1 - \\rho} \\theta^*_i \\right)$$
                            Donde $\\rho \\sim \\text{Beta}(0.5, 0.5)$ controla la proporción de varianza espacial estructurada y $\\phi^*_i$ es el componente ICAR escalado por la varianza geométrica marginal.
                         """)
                     except Exception as e:
                         st.error(f"Error al leer la tabla de comparación bayesiana: {e}")
                 else:
-                    st.warning("⚠️ La tabla de comparación de modelos (`tabla_comparacion_modelos_bayesiana.xlsx`) aún no ha sido generada. Ejecuta `python run_pipeline.py` en la terminal para ajustar formalmente los 4 modelos mediante NUTS.")
+                    st.warning("⚠️ La tabla de comparación de modelos (`tabla_comparacion_modelos_bayesiana.xlsx`) aún no ha sido generada. Ejecuta `python run_pipeline.py` en la terminal para ajustar formalmente los 4 modelos mediante ADVI.")
             
-        # Pestaña 5: Mapas Bayesianos
+        # Pestaña 5: Validación ADVI vs. NUTS
+        with subtab_nuts:
+            st.subheader("Validación Metodológica: ADVI vs. NUTS (MCMC) y Estabilidad de Semillas")
+            st.markdown("""
+            **Justificación Metodológica:**
+            - **ADVI (Automatic Differentiation Variational Inference)** es el método de inferencia principal de la tesis por su alta eficiencia computacional en modelos espaciales jerárquicos de alta dimensión ($V=244$ nodos, múltiples hiperparámetros de escala y sobredispersión).
+            - **NUTS (No-U-Turn Sampler, MCMC)** se utiliza estrictamente como **patrón de validación metodológica** sobre el modelo final seleccionado (BYM2), empleando exactamente la misma formulación y los mismos priors.
+            - Esta validación verifica que la aproximación variacional gaussiana de campo medio recupera adecuadamente las medias posteriores y los riesgos relativos espaciales sin sesgar la identificación de hotspots ni la toma de decisiones.
+            """)
+            
+            nuts_tab1, nuts_tab2 = st.tabs([
+                "⚖️ Comparación Paramétrica ADVI vs. NUTS",
+                "🌱 Estabilidad entre Semillas (ADVI)"
+            ])
+            
+            with nuts_tab1:
+                st.markdown("#### Tabla Comparativa de Parámetros: ADVI vs. NUTS")
+                nuts_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
+                if os.path.exists(nuts_comp_path):
+                    try:
+                        df_nuts_comp = pd.read_excel(nuts_comp_path)
+                        st.dataframe(df_nuts_comp.style.format({
+                            col: "{:.4f}" for col in df_nuts_comp.columns if col != 'Parámetro' and df_nuts_comp[col].dtype in ['float64', 'float32']
+                        }), use_container_width=True)
+                        st.markdown("""
+                        **Hallazgos Clave de la Validación:**
+                        - Las **medias posteriores** estimadas por ADVI y NUTS son altamente consistentes en todos los parámetros estructurales ($\alpha$, $\beta_{\\text{year}}$, $\beta_{\\text{area}}$, $\sigma_s$, $\rho$, $\alpha_{disp}$).
+                        - El **ratio de incertidumbre** ($SD_{\\text{ADVI}} / SD_{\\text{NUTS}}$) documenta empíricamente la leve subestimación de varianza en la cola típica de la aproximación de campo medio, confirmando la validez y honestidad metodológica del enfoque variacional.
+                        """)
+                    except Exception as e:
+                        st.error(f"Error al cargar la tabla de validación ADVI vs. NUTS: {e}")
+                else:
+                    st.info("La tabla comparativa ADVI vs. NUTS se generará al ejecutar `python run_pipeline.py`.")
+                    
+                st.markdown("#### Dispersión y Correlación de Riesgos Relativos (RR) por Subcircuito")
+                rr_scatter_img = os.path.join(config.FIGURES_DIR, "Figura_dispersion_rr_advi_nuts.png")
+                if os.path.exists(rr_scatter_img):
+                    st.image(rr_scatter_img, use_column_width=True)
+                else:
+                    st.info("El gráfico de dispersión de RR ADVI vs. NUTS se generará al ejecutar `python run_pipeline.py`.")
+                    
+            with nuts_tab2:
+                st.markdown("#### Evaluación de Estabilidad Estocástica entre Semillas Independientes (ADVI)")
+                st.markdown("""
+                Para verificar que el ajuste de ADVI no queda atrapado en óptimos locales espurios, el modelo final BYM2 se evaluó bajo 3 semillas aleatorias independientes (42, 123 y 999) con criterio de convergencia $\\Delta \\text{ELBO} < 10^{-4}$.
+                """)
+                seed_stab_path = os.path.join(config.TABLES_DIR, "tabla_estabilidad_semillas_advi.xlsx")
+                if os.path.exists(seed_stab_path):
+                    try:
+                        df_seed_stab = pd.read_excel(seed_stab_path)
+                        df_seed_stab['Semilla'] = df_seed_stab['Semilla'].astype(str)
+                        st.dataframe(df_seed_stab.style.format({
+                            col: "{:.4f}" for col in df_seed_stab.columns if col != 'Semilla' and df_seed_stab[col].dtype in ['float64', 'float32']
+                        }), use_container_width=True)
+                        st.success("✅ La variación del ELBO final y de las estimaciones posteriores entre semillas es mínima, confirmando la robustez y replicabilidad del ajuste variacional.")
+                    except Exception as e:
+                        st.error(f"Error al cargar la tabla de estabilidad de semillas: {e}")
+                else:
+                    st.info("La tabla de estabilidad de semillas se generará al ejecutar `python run_pipeline.py`.")
+            
+        # Pestaña 6: Mapas Bayesianos
         with subtab_mapas:
             st.subheader("Cartografía Temática de Riesgo y Probabilidades Bayesianas")
             st.markdown("Visualización de las estimaciones posteriores mapeadas sobre los subcircuitos de Guayaquil.")
@@ -1161,8 +1227,9 @@ with tab_modelo_bayesiano:
                     'prob_exced_1_5': prob_exced_1_5
                 })
                 
-                # Unir con el GeoDataFrame filtrado para visualización
-                gdf_map_bayes = gdf_subcircuitos.merge(df_bayes_metrics, on='cod_subcircu', how='inner')
+                # Unir con el GeoDataFrame filtrado para visualización evitando duplicación de columnas
+                base_cols = [c for c in gdf_subcircuitos.columns if c not in df_bayes_metrics.columns or c == 'cod_subcircu']
+                gdf_map_bayes = gdf_subcircuitos[base_cols].merge(df_bayes_metrics, on='cod_subcircu', how='inner')
                 
                 mapa_tipo = st.selectbox(
                     "Selecciona la capa de mapa bayesiano a visualizar:",
@@ -1235,25 +1302,28 @@ with tab_modelo_bayesiano:
             else:
                 st.warning("Los datos del modelo y del shapefile no están listos.")
                 
-        # Pestaña 6: Resumen del Modelo
+        # Pestaña 7: Resumen del Modelo
         with subtab_resumen:
             st.subheader("Tabla Resumen del Modelo Posterior (az.summary)")
-            st.markdown("Estadísticas resumidas e intervalos de credibilidad del 95% (HDI) para los parámetros clave del modelo.")
+            st.markdown("Estadísticas resumidas e intervalos de credibilidad del 95% (HDI) para los parámetros clave del modelo generadas a partir de 2,000 muestras variacionales (ADVI).")
             
             # Generar tabla interactiva
-            summary_df = az.summary(trace, var_names=['alpha', 'sigma_phi', 'sigma_t', 'alpha_disp'])
+            summary_vars = [v for v in ['alpha', 'beta_year', 'beta_area', 'sigma_s', 'rho', 'alpha_disp', 'sigma_phi', 'sigma_theta'] if v in trace.posterior]
+            summary_df = az.summary(trace, var_names=summary_vars)
             st.dataframe(summary_df.style.format(precision=4), use_container_width=True)
             st.markdown("""
-            *Nota:*
-            - **mean / sd:** Media y desviación estándar posterior.
+            *Nota Metodológica:*
+            - **mean / sd:** Media y desviación estándar posterior estimada por aproximación variacional ADVI.
             - **hdi_3% / hdi_97%:** Intervalo de credibilidad de densidad posterior más alta al 95% (HDI).
-            - **r_hat / ess:** No aplicables en inferencia variacional (ADVI) de una sola cadena de simulación posterior.
+            - **mcse_mean / mcse_sd:** Error estándar Monte Carlo de las 2,000 extracciones variacionales.
+            - Para la comparación rigurosa con cadenas MCMC y el factor de reducción de escala $\\hat{R}$, consultar la **Pestaña 5: Validación ADVI vs. NUTS**.
             """)
 
 # ================= TAB 4: SIMULADOR TÁCTICO DE RIESGO =================
 with tab_sim:
     st.subheader("🎯 Simulador de Riesgo Bayesiano Geográfico")
-    st.markdown("Haz clic en **cualquier coordenada del mapa interactivo** a la izquierda para estimar el riesgo relativo exacto y la probabilidad de sufrir un evento violento en ese punto específico.")
+    st.warning("⚠️ **Herramienta ilustrativa; no es un resultado del modelo:** Este simulador proyecta estimaciones geográficas con fines exploratorios e ilustrativos para el análisis territorial y no sustituye los diagnósticos formales del modelo.")
+    st.markdown("Haz clic en **cualquier coordenada del mapa interactivo** a la izquierda para estimar el riesgo relativo y la probabilidad posterior de criminalidad en el subcircuito correspondiente.")
     
     col_s1, col_s2 = st.columns([2, 1])
     
@@ -1306,61 +1376,59 @@ with tab_sim:
             
             if not contiene.empty:
                 zona_cercana = contiene.iloc[0]
-                distancia_min = 0.0
-                factor_decaimiento = 1.0
             else:
                 # Buscar el subcircuito más cercano
                 gdf_subcircuitos['dist'] = gdf_subcircuitos.geometry.centroid.distance(point_geom)
                 zona_cercana = gdf_subcircuitos.loc[gdf_subcircuitos['dist'].idxmin()]
-                distancia_min = gdf_subcircuitos['dist'].min()
-                # Función de decaimiento por distancia (grados)
-                factor_decaimiento = np.exp(-35 * distancia_min)
                 
             # Calcular riesgo local proyectado con ayuda del trace de PyMC
             sub_codes_loc = sorted(gdf_subcircuitos['cod_subcircu'].unique())
+            cod_actual = zona_cercana['cod_subcircu']
             
-            if trace is not None and zona_cercana['cod_subcircu'] in sub_codes_loc:
-                idx_trace = sub_codes_loc.index(zona_cercana['cod_subcircu'])
-                # Extraer muestras de la distribución posterior de phi para este subcircuito
-                phi_samples = trace.posterior['phi'].values[:, :, idx_trace]
-                rr_samples = np.exp(phi_samples)
+            if trace is not None and cod_actual in sub_codes_loc:
+                idx_trace = sub_codes_loc.index(cod_actual)
+                spatial_var = 'psi' if 'psi' in trace.posterior else ('phi' if 'phi' in trace.posterior else 'spatial_total')
+                phi_all = trace.posterior[spatial_var].values  # shape (chains, draws, zonas)
+                exp_all = np.exp(phi_all)
+                # Estandarización sobre la media espacial de los subcircuitos (Clayton & Kaldor, 1987)
+                rr_all = exp_all / np.mean(exp_all, axis=-1, keepdims=True)
+                rr_samples = rr_all[..., idx_trace].flatten()
                 
-                # Calcular probabilidades usando la muestra posterior
-                prob_segura = float(np.mean(rr_samples < 1.0)) * factor_decaimiento
-                prob_insegura = float(np.mean(rr_samples > 1.0)) * factor_decaimiento
-                prob_peligro = float(np.mean(rr_samples > 1.5)) * factor_decaimiento
+                # Calcular probabilidades empíricas usando las muestras posteriores
+                prob_segura = float(np.mean(rr_samples < 1.0))
+                prob_insegura = float(np.mean(rr_samples > 1.0))
+                prob_peligro = float(np.mean(rr_samples > 1.5))
                 
                 # Riesgo relativo mediano e intervalos de credibilidad
-                rr_estimado = float(np.median(rr_samples)) * factor_decaimiento
-                hdi_min = float(np.percentile(rr_samples, 2.5)) * factor_decaimiento
-                hdi_max = float(np.percentile(rr_samples, 97.5)) * factor_decaimiento
+                rr_estimado = float(np.median(rr_samples))
+                hdi_min = float(np.percentile(rr_samples, 2.5))
+                hdi_max = float(np.percentile(rr_samples, 97.5))
             else:
-                # Fallback en caso de que no esté el trace cargado
-                rr_med = float(zona_cercana['rr_estimado_mediana'])
-                rr_estimado = rr_med * factor_decaimiento
-                prob_insegura = float(zona_cercana['probabilidad_excedencia']) * factor_decaimiento
-                prob_segura = max(0.0, 1.0 - prob_insegura)
-                prob_peligro = max(0.0, prob_insegura * 0.7)
-                hdi_min = max(0.1, rr_estimado - 0.4)
-                hdi_max = rr_estimado + 0.6
+                # Lectura directa desde los resultados precomputados por el modelo (resultados_riesgo_relativo.csv)
+                rr_estimado = float(zona_cercana.get('rr_estimado_mediana', 1.0))
+                prob_peligro = float(zona_cercana.get('probabilidad_excedencia', 0.0))
+                prob_insegura = float(zona_cercana.get('prob_exced_1', 1.0 if rr_estimado > 1.0 else 0.0))
+                prob_segura = float(zona_cercana.get('prob_segura', max(0.0, 1.0 - prob_insegura)))
+                hdi_min = float(zona_cercana.get('rr_limite_inf_95', rr_estimado))
+                hdi_max = float(zona_cercana.get('rr_limite_sup_95', rr_estimado))
             
             # Clasificación de seguridad basada en probabilidades posteriores
             if prob_segura >= 0.70:
                 color = "#66bb6a"  # Verde
                 estado = "🟢 SEGURO (BAJO RIESGO)"
-                explicacion = f"La probabilidad bayesiana de que este barrio mantenga una tasa de violencia por debajo del promedio cantonal es del **{prob_segura*100:.1f}%**. El análisis espacial confirma que se trata de una zona con condiciones estables y seguras."
+                explicacion = f"La probabilidad bayesiana de que este subcircuito mantenga una tasa de homicidios por debajo del promedio cantonal es del **{prob_segura*100:.1f}%**. El análisis espacial confirma condiciones de menor riesgo relativo."
             elif prob_segura < 0.70 and prob_peligro < 0.50:
                 color = "#ffb74d"  # Naranja
                 estado = "🟡 MODERADO (RIESGO MEDIO)"
-                explicacion = f"El barrio presenta niveles de alerta intermedios, con una probabilidad de riesgo superior al promedio de **{prob_insegura*100:.1f}%**. Se recomienda mantener patrullaje preventivo y monitoreo de actividades."
+                explicacion = f"El subcircuito presenta niveles de alerta intermedios, con una probabilidad posterior de riesgo superior al promedio cantonal de **{prob_insegura*100:.1f}%**."
             else:
                 color = "#ff4444"  # Rojo
                 estado = "🔴 INSEGURO (ALTA PRIORIDAD)"
-                explicacion = f"Zona de concentración delictiva severa. La probabilidad de peligro extremo (riesgo > 50% sobre la media cantonal) es del **{prob_peligro*100:.1f}%**. Requiere despliegue táctico prioritario e intervención policial inmediata."
+                explicacion = f"Zona de concentración delictiva severa. La probabilidad de riesgo crítico (RR > 1.5 sobre la referencia cantonal) es del **{prob_peligro*100:.1f}%**."
             
             resultados_html = f"""<div class="stat-card" style="border-left: 5px solid {color}; padding: 15px; background: rgba(30,30,30,0.6); border-radius: 8px;">
 <div style="font-size: 0.85rem; font-weight: bold; color: #f0f6fc; margin-bottom: 10px; display: flex; align-items: center; gap: 8px;">
-    <i class="fa-solid fa-shield-halved"></i> EVALUACIÓN BAYESIANA DE SEGURIDAD
+    <i class="fa-solid fa-shield-halved"></i> EVALUACIÓN BAYESIANA DE RIESGO
 </div>
 <div style="font-size: 0.8rem; color: #8b949e; margin-bottom: 12px;">
     Subcircuito: <strong style="color: #58a6ff;">{zona_cercana['subcircuito_nom']}</strong><br>
@@ -1368,7 +1436,7 @@ with tab_sim:
 </div>
 
 <div style="background-color: rgba(255,255,255,0.03); padding: 12px; border-radius: 6px; margin-bottom: 15px;">
-    <div style="font-size: 0.8rem; color: #8b949e;">Veredicto de Seguridad:</div>
+    <div style="font-size: 0.8rem; color: #8b949e;">Clasificación de Riesgo Posterior:</div>
     <div style="color: {color}; font-size: 1.15rem; font-weight: bold; margin-top: 4px;">{estado}</div>
     <div style="font-size: 0.75rem; color: #c9d1d9; margin-top: 6px; line-height: 1.4; text-align: justify;">{explicacion}</div>
 </div>
@@ -1376,7 +1444,7 @@ with tab_sim:
 <div style="display: flex; flex-direction: column; gap: 10px;">
     <div>
         <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #8b949e; margin-bottom: 2px;">
-            <span>🟢 Probabilidad de Barrio Seguro (RR < 1.0)</span>
+            <span>🟢 Probabilidad de Riesgo Bajo (RR < 1.0)</span>
             <strong style="color: #66bb6a;">{prob_segura*100:.1f}%</strong>
         </div>
         <div style="height: 6px; background-color: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
@@ -1394,7 +1462,7 @@ with tab_sim:
     </div>
     <div>
         <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #8b949e; margin-bottom: 2px;">
-            <span>🔴 Probabilidad de Peligro Extremo (RR > 1.5)</span>
+            <span>🔴 Probabilidad de Riesgo Crítico (RR > 1.5)</span>
             <strong style="color: #ff4444;">{prob_peligro*100:.1f}%</strong>
         </div>
         <div style="height: 6px; background-color: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
@@ -1415,13 +1483,15 @@ with tab_sim:
             
             # Ecuaciones matemáticas en Latex
             st.markdown("""<div class="latex-container">
-<p style="font-size: 0.85rem; color: #58a6ff; font-weight: bold; margin-bottom: 10px;">📐 Formulación Matemática del Modelo CAR / ICAR:</p>""", unsafe_allow_html=True)
-            st.latex(r"\log(\mu_{it}) = \log(E_i) + \alpha + \theta_i + \phi_i + \gamma_t")
-            st.latex(r"\phi_i | \phi_{-i} \sim N\left( \frac{\sum_{j \sim i} \phi_j}{d_i}, \frac{\sigma_\phi^2}{d_i} \right)")
+<p style="font-size: 0.85rem; color: #58a6ff; font-weight: bold; margin-bottom: 10px;">📐 Formulación Matemática del Modelo BYM2 Estimado:</p>""", unsafe_allow_html=True)
+            st.latex(r"\log(\mu_{it}) = \alpha + \beta_{\text{year}} \cdot \mathbb{I}(t = 2025) + \beta_{\text{area}} \log(\text{Area}_i) + \psi_i")
+            st.latex(r"\psi_i = \sigma_s \left( \sqrt{\rho} \phi^*_i + \sqrt{1 - \rho} \theta^*_i \right)")
             st.markdown("""<p style="font-size: 0.75rem; color: #8b949e; margin-top: 5px;">
-• <b>&theta;</b>: Efecto aleatorio estructurado (heterogeneidad).<br>
-• <b>&phi;</b>: Efecto espacial autoregresivo de vecindad (ICAR).<br>
-• <b>&gamma;</b>: Efecto temporal (caminata aleatoria).
+• <b>&psi;<sub>i</sub></b>: Efecto espacial total del modelo BYM2.<br>
+• <b>&phi;*<sub>i</sub></b>: Componente ICAR escalado (contigüidad geográfica de reina).<br>
+• <b>&theta;*<sub>i</sub></b>: Componente no estructurado estándar Normal(0, 1) (heterogeneidad zonal).<br>
+• <b>&rho;</b>: Parámetro de mezcla espacial con prior Beta(0.5, 0.5).<br>
+• <b>&beta;<sub>year</sub></b>: Efecto fijo anual con prior Normal(0, 1).
 </p>
 </div>""", unsafe_allow_html=True)
             

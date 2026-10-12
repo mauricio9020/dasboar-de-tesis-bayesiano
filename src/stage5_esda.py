@@ -19,7 +19,9 @@ def connect_graph_islands(w: libpysal.weights.W, gdf: gpd.GeoDataFrame) -> libpy
     """
     from scipy.sparse.csgraph import connected_components
     neighbors = {k: list(v) for k, v in w.neighbors.items()}
-    centroids = gdf.geometry.centroid
+    # Proyectar a UTM 17S si está en coordenadas geográficas para distancias métricas euclidianas exactas
+    gdf_proj = gdf.to_crs("EPSG:32717") if (gdf.crs is not None and gdf.crs.is_geographic) else gdf
+    centroids = gdf_proj.geometry.centroid
     adj = w.sparse
     n_comp, labels = connected_components(adj, directed=False)
     
@@ -79,14 +81,15 @@ def compare_weights(gdf: gpd.GeoDataFrame) -> tuple:
     w_rook = connect_graph_islands(w_rook_raw, gdf_valid)
     
     queen_islands = len(w_queen.islands)
-    queen_mean_neigh = np.mean([len(v) for v in w_queen.neighbors.values()])
-    queen_density = w_queen.pct_nonzero
+    queen_mean_neigh = float(np.mean([len(v) for v in w_queen.neighbors.values()]))
+    queen_density = float(w_queen.pct_nonzero)  # w.pct_nonzero ya está expresado en porcentaje por libpysal
     
     rook_islands = len(w_rook.islands)
-    rook_mean_neigh = np.mean([len(v) for v in w_rook.neighbors.values()])
-    rook_density = w_rook.pct_nonzero
+    rook_mean_neigh = float(np.mean([len(v) for v in w_rook.neighbors.values()]))
+    rook_density = float(w_rook.pct_nonzero)    # w.pct_nonzero ya está expresado en porcentaje por libpysal
     
     logger.info(f"Tras conexión: Queen tiene {queen_islands} islas y {w_queen.n_components} componentes conexos.")
+    logger.info(f"MATRIZ FINAL SELECCIONADA PARA MODELADO BAYESIANO: Queen con las {queen_islands_raw} islas conectadas (0 islas finales, grafo conexo), promedio de vecinos: {queen_mean_neigh:.2f}, densidad: {queen_density:.4f}%.")
     
     comparison_data = {
         "Métrica": [
@@ -96,25 +99,28 @@ def compare_weights(gdf: gpd.GeoDataFrame) -> tuple:
             "Promedio de Vecinos",
             "Densidad de la Matriz (%)",
             "Máximo número de vecinos",
-            "Mínimo número de vecinos"
+            "Mínimo número de vecinos",
+            "Matriz Seleccionada para el Modelo Final"
         ],
         "Matriz Queen": [
             w_queen.n,
             queen_islands_raw,
             queen_islands,
             round(queen_mean_neigh, 2),
-            round(queen_density * 100, 4),
+            round(queen_density, 4),
             max([len(v) for v in w_queen.neighbors.values()]),
-            min([len(v) for v in w_queen.neighbors.values()])
+            min([len(v) for v in w_queen.neighbors.values()]),
+            "SÍ (Queen, 4 islas de Puná conectadas)"
         ],
         "Matriz Rook": [
             w_rook.n,
             rook_islands_raw,
             rook_islands,
             round(rook_mean_neigh, 2),
-            round(rook_density * 100, 4),
+            round(rook_density, 4),
             max([len(v) for v in w_rook.neighbors.values()]),
-            min([len(v) for v in w_rook.neighbors.values()])
+            min([len(v) for v in w_rook.neighbors.values()]),
+            "NO (Descartada)"
         ]
     }
     
@@ -242,9 +248,30 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     plt.close()
     
     # Guardar métricas del Moran Global a Excel
+    mean_neigh_queen = float(np.mean([len(v) for v in w_selected.neighbors.values()]))
+    logger.info(f"MORAN GLOBAL (Matriz Queen final con 4 islas conectadas): I={moran.I:.4f}, E(I)={moran.EI:.4f}, z={moran.z_sim:.4f}, p-valor={moran.p_sim:.4f} (permutaciones={moran.permutations}, semilla={config.RANDOM_SEED}, vecinos={mean_neigh_queen:.2f})")
+    
     df_moran_global = pd.DataFrame({
-        "Métrica": ["Indice Moran I", "Esperanza E(I)", "Z-Score", "Pseudo p-valor (9999 perm)"],
-        "Valor": [moran.I, moran.EI, moran.z_sim, moran.p_sim]
+        "Métrica": [
+            "Indice Moran I",
+            "Esperanza E(I)",
+            "Z-Score",
+            "Pseudo p-valor",
+            "Permutaciones",
+            "Semilla Aleatoria",
+            "Matriz Espacial Utilizada",
+            "Promedio Vecinos Matriz"
+        ],
+        "Valor": [
+            round(moran.I, 4),
+            round(moran.EI, 4),
+            round(moran.z_sim, 4),
+            round(moran.p_sim, 4),
+            moran.permutations,
+            config.RANDOM_SEED,
+            "Queen (4 islas de Puná conectadas)",
+            round(mean_neigh_queen, 2)
+        ]
     })
     
     excel_esda_path = os.path.join(config.TABLES_DIR, "tabla_esda_moran.xlsx")

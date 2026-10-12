@@ -57,26 +57,16 @@ def run_stage7(df_anual: pd.DataFrame) -> tuple:
     pois_ll = poisson_res.llf
     pois_aic = poisson_res.aic
     pois_bic = poisson_res.bic
-    # Pseudo R² de McFadden
-    pois_pr2 = 1.0 - (poisson_res.llf / poisson_res.llnull)
     
-    # Extraer métricas para Binomial Negativo (si se ajustó con negativebinomial)
-    if hasattr(nb_res, 'aic'):
-        nb_ll = nb_res.llf
-        nb_aic = nb_res.aic
-        nb_bic = nb_res.bic
-        nb_pr2 = 1.0 - (nb_res.llf / nb_res.llnull)
-    else:
-        # GLM no tiene llf o aic a veces
-        nb_ll = nb_res.llf
-        nb_aic = nb_res.aic
-        nb_bic = nb_res.bic
-        nb_pr2 = np.nan # no disponible fácilmente para GLM
+    # Extraer métricas para Binomial Negativo
+    nb_ll = nb_res.llf
+    nb_aic = nb_res.aic
+    nb_bic = nb_res.bic
         
     df_compare = pd.DataFrame({
-        "Métrica": ["Log-Likelihood", "AIC (Akaike)", "BIC (Bayesiano)", "Pseudo R² (McFadden)"],
-        "Modelo Poisson": [pois_ll, pois_aic, pois_bic, pois_pr2],
-        "Modelo Binomial Negativo": [nb_ll, nb_aic, nb_bic, nb_pr2]
+        "Métrica": ["Log-Likelihood", "AIC (Akaike)", "BIC (Bayesiano)"],
+        "Modelo Poisson": [pois_ll, pois_aic, pois_bic],
+        "Modelo Binomial Negativo": [nb_ll, nb_aic, nb_bic]
     })
     
     # Redondear valores

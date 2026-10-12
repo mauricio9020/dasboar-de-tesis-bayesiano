@@ -52,6 +52,8 @@ def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame)
     # Probabilidad posterior de excedencia de riesgo crítico P(RR > 1.5)
     exceedance_threshold = 1.5
     prob_exceedance = np.mean(rr_samples > exceedance_threshold, axis=0)
+    prob_exceedance_1 = np.mean(rr_samples > 1.0, axis=0)
+    prob_safe = np.mean(rr_samples < 1.0, axis=0)
     
     # 3. Mapear resultados a los subcircuitos
     # Obtenemos los códigos ordenados
@@ -63,7 +65,9 @@ def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame)
         'rr_estimado_media': rr_mean,
         'rr_limite_inf_95': rr_lower,
         'rr_limite_sup_95': rr_upper,
-        'probabilidad_excedencia': prob_exceedance
+        'probabilidad_excedencia': prob_exceedance,
+        'prob_exced_1': prob_exceedance_1,
+        'prob_segura': prob_safe
     })
     
     # 4. Clasificación de Riesgo Relativo por Quintiles

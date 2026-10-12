@@ -1,0 +1,3 @@
+Año,Coeficiente_Log_Media,Coeficiente_Log_Mediana,HDI_inf_95,HDI_sup_95,Riesgo_Relativo_Media,Riesgo_Relativo_Mediana,RR_HDI_inf_95,RR_HDI_sup_95,Interpretacion
+2024,0.0,0.0,0.0,0.0,1.0,1.0,1.0,1.0,Línea base cantonal de referencia (2024)
+2025,0.3175,0.3157,0.1995,0.4422,1.3763,1.3712,1.2208,1.5561,Variación neta estimada de +37.1% en la tasa de homicidios en 2025 frente a 2024

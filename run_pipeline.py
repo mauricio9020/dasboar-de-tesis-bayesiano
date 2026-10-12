@@ -68,19 +68,12 @@ def main():
         # Etapa 7: Ajuste de Modelos Clásicos (Poisson vs NegBin Frecuentista)
         poisson_res, nb_res, df_compare = run_stage7(gdf_anual)
         
-        # Etapa 8: Ajuste y Comparación de los 4 Modelos Bayesianos (PyMC NUTS)
-        trace_path = os.path.join(config.MODELS_DIR, "pymc_trace.nc")
-        comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_modelos_bayesiana.xlsx")
-        if os.path.exists(trace_path) and os.path.exists(comp_path):
-            logger.info(f"Cargando traza bayesiana preexistente desde: {trace_path}")
-            import arviz as az
-            trace = az.from_netcdf(trace_path)
-            bayesian_model = None
-        else:
-            bayesian_model, trace, df_comp_bayes, traces_dict = run_stage8(gdf_total, gdf_anual, w_selected)
+        # Etapa 8: Ajuste y Comparación de los 4 Modelos Bayesianos mediante ADVI (PyMC) y Validación NUTS
+        # Ajuste completo y real de los 4 modelos con ADVI (n=40000, tol=1e-4), 3 semillas, y validación NUTS
+        bayesian_model, trace, df_comp_bayes, traces_dict = run_stage8(gdf_total, gdf_anual, w_selected)
         
         # Etapa 9: Diagnósticos Bayesianos y PPC
-        metrics_info = run_stage9(trace)
+        metrics_info = run_stage9(trace, traces_dict=traces_dict)
         
         # Etapa 10: Estimación de Riesgos Relativos y Cartografía
         gdf_rr = run_stage10(trace, gdf_total, gdf_anual)
