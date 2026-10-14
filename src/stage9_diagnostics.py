@@ -89,9 +89,10 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
     
     # Preparar tabla de convergencia y diagnósticos generales de ADVI
     conv_rows = [
-        {"Diagnóstico": "Método de Inferencia", "Valor": "ADVI (Automatic Differentiation Variational Inference)"},
+        {"Diagnóstico": "Modelo Evaluado", "Valor": "Modelo (c) Binomial Negativa (ICAR + No Estructurado) [Mejor LOO-CV]"},
+        {"Diagnóstico": "Método de Inferencia", "Valor": "ADVI (Automatic Differentiation Variational Inference, Adam lr=0.005)"},
         {"Diagnóstico": "Muestras Posteriores Extraídas", "Valor": int(trace.posterior.dims.get('draw', 2000))},
-        {"Diagnóstico": "Criterio de Convergencia", "Valor": "CheckParametersConvergence (tolerancia 1e-4)"},
+        {"Diagnóstico": "Criterio de Convergencia", "Valor": "Variación media móvil ELBO últimas 5,000 iteraciones < 0.1%"},
         {"Diagnóstico": "ELPD_WAIC", "Valor": float(waic_res.elpd_waic)},
         {"Diagnóstico": "ELPD_WAIC_SE", "Valor": float(waic_res.se)},
         {"Diagnóstico": "p_WAIC", "Valor": float(waic_res.p_waic)},
@@ -106,9 +107,10 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
     
     if rho_stats:
         conv_rows.extend([
-            {"Diagnóstico": "Rho Media Posterior", "Valor": rho_stats['rho_media']},
+            {"Diagnóstico": "Rho Media Posterior (ADVI)", "Valor": rho_stats['rho_media']},
             {"Diagnóstico": "Rho HDI 95% Inferior", "Valor": rho_stats['rho_hdi_2.5']},
-            {"Diagnóstico": "Rho HDI 95% Superior", "Valor": rho_stats['rho_hdi_97.5']}
+            {"Diagnóstico": "Rho HDI 95% Superior", "Valor": rho_stats['rho_hdi_97.5']},
+            {"Diagnóstico": "Aviso Interpretativo Rho", "Valor": "No fiable bajo ADVI (0.027 vs 0.813 en NUTS)"}
         ])
         
     if year_stats:
@@ -124,6 +126,9 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
     excel_nuts_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
     df_comp_nuts = pd.read_excel(excel_nuts_path) if os.path.exists(excel_nuts_path) else None
     
+    excel_corr_path = os.path.join(config.TABLES_DIR, "tabla_correlacion_rr_advi_nuts.xlsx")
+    df_corr_rr = pd.read_excel(excel_corr_path) if os.path.exists(excel_corr_path) else None
+    
     excel_stab_path = os.path.join(config.TABLES_DIR, "tabla_estabilidad_semillas_advi.xlsx")
     df_stability = pd.read_excel(excel_stab_path) if os.path.exists(excel_stab_path) else None
     
@@ -134,6 +139,8 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
         df_conv.to_excel(writer, sheet_name="Diagnosticos_Convergencia", index=False)
         if df_comp_nuts is not None:
             df_comp_nuts.to_excel(writer, sheet_name="Validacion_ADVI_vs_NUTS", index=False)
+        if df_corr_rr is not None:
+            df_corr_rr.to_excel(writer, sheet_name="Correlacion_RR_ADVI_vs_NUTS", index=False)
         if df_stability is not None:
             df_stability.to_excel(writer, sheet_name="Estabilidad_Semillas", index=False)
             
@@ -147,7 +154,7 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
     
     # Gráfico 15: Posterior distributions
     logger.info("Generando gráficos de densidad posterior...")
-    plot_post_vars = [v for v in ['alpha', 'beta_year', 'beta_area', 'sigma_s', 'rho', 'alpha_disp'] if v in trace.posterior]
+    plot_post_vars = [v for v in ['alpha', 'beta_year', 'beta_area', 'sigma_phi', 'sigma_theta', 'sigma_s', 'rho', 'alpha_disp'] if v in trace.posterior]
     az.plot_posterior(trace, var_names=plot_post_vars)
     save_diagnostic_plot("Figura15_bayesian_posterior")
     
@@ -198,6 +205,9 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
         logger.warning("No se encontraron muestras en trace.posterior_predictive para generar PPC.")
         
     metrics_info = {}
+    metrics_info["Modelo_Referencia"] = "Modelo (c) Binomial Negativa (ICAR + No Estructurado) [Mejor LOO-CV]"
+    metrics_info["Metodo_Inferencia"] = "ADVI (Adam lr=0.005)"
+    metrics_info["Criterio_Convergencia"] = "Variación media móvil ELBO últimas 5,000 iteraciones < 0.1%"
     metrics_info["ELPD_WAIC"] = float(waic_res.elpd_waic)
     metrics_info["ELPD_WAIC_SE"] = float(waic_res.se)
     metrics_info["p_WAIC"] = float(waic_res.p_waic)

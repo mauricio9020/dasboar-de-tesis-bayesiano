@@ -539,6 +539,35 @@ with tab_kpi:
                 st.info("Sin datos de Hombres/Mujeres para graficar boxplot")
         else:
             st.info("Sin registros")
+            
+    # Sección ESDA: Autocorrelación Espacial Global de Moran
+    st.markdown("---")
+    st.subheader("📍 Autocorrelación Espacial Global de Moran (ESDA)")
+    st.markdown("""
+    Se evalúa la dependencia espacial mediante el **Índice de Moran Global** bajo dos especificaciones:
+    - **(a) Período del Modelo 2024-2025 (Principal de la Tesis):** Conteo agregado correspondiente a los 2 años completos modelados en el panel bayesiano.
+    - **(b) Período Completo 2024-2026 (Exploratorio):** Incluye enero 2026 como contexto del período total registrado.
+    
+    Ambas versiones utilizan la matriz de contigüidad **Queen de primer orden con las 4 islas de Puná conectadas** a sus costas continentales más próximas, 9,999 permutaciones aleatorias y semilla fija 42.
+    """)
+    
+    esda_excel_path = os.path.join(config.TABLES_DIR, "tabla_esda_moran.xlsx")
+    if os.path.exists(esda_excel_path):
+        try:
+            df_esda_moran = pd.read_excel(esda_excel_path)
+            st.dataframe(df_esda_moran, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error al cargar tabla ESDA: {e}")
+            
+    col_esda1, col_esda2 = st.columns(2)
+    with col_esda1:
+        f11_path = os.path.join(config.FIGURES_DIR, "Figura11_moran_scatterplot.png")
+        if os.path.exists(f11_path):
+            st.image(f11_path, caption="Figura 11: Moran Scatterplot de Homicidios 2024-2025", use_column_width=True)
+    with col_esda2:
+        f12_path = os.path.join(config.FIGURES_DIR, "Figura12_lisa_clusters.png")
+        if os.path.exists(f12_path):
+            st.image(f12_path, caption="Figura 12: Mapa de Agrupamiento LISA (Homicidios 2024-2025)", use_column_width=True)
 
 with tab_mapa:
     st.subheader("🗺️ Mapa Probabilístico e Intensidad de Riesgo")
@@ -871,51 +900,43 @@ with tab_modelo_bayesiano:
             st.markdown("""
             El modelo ajustado para estimar la tasa predictiva y el riesgo relativo de muertes violentas en Guayaquil se formula como un modelo Bayesiano Jerárquico Espacio-Temporal con verosimilitud **Binomial Negativa** para controlar la sobredispersión territorial extrema.
             
-            #### 1. Estructura Jerárquica del Modelo
+            #### 1. Modelo de Referencia Seleccionado (Mejor LOO-CV)
+            **Modelo (c): Binomial Negativa con ICAR + Efecto No Estructurado (Besag et al., 1991)**
             
-            **Modelo (Likelihood):**
-            $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
+            - **Verosimilitud (Likelihood):**
+              $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
             
-            **Media Teórica:**
-            $$E(Y_{it}) = \\mu_{it}$$
+            - **Función de Enlace (Log-Link):**
+              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i$$
             
-            **Varianza Teórica (Modelo de Sobredispersión NB2):**
-            $$\\text{Var}(Y_{it}) = \\mu_{it} + \\frac{\\mu_{it}^2}{\\alpha_{disp}}$$
+            - **Componente Espacial Estructurado (ICAR):**
+              $$\\phi \\sim \\text{ICAR}(W, \\sigma_\\phi^2)$$
             
-            **Función de Enlace (Log-Link):**
-            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
-            
+            - **Heterogeneidad Zonal No Estructurada:**
+              $$\\theta_i \\sim \\text{Normal}(0, \\sigma_\\theta^2)$$
+              
             Donde:
             - $Y_{it}$: Número de homicidios observados en el subcircuito $i$ en el año $t$.
             - $\\mu_{it}$: Media predictiva condicional ajustada por el modelo.
             - $\\alpha$: Intercepto global (tasa basal cantonal en 2024).
-            - $\\beta_{\\text{year}}$: Efecto fijo temporal para el año 2025 con prior débil $\\text{Normal}(0, 1)$ (sustituye al RW1 anual para garantizar identificación paramétrica estricta frente al intercepto con $T=2$).
-            - $\\beta_{\\text{area}}$: Coeficiente estimado para la covariable $\\log(\\text{Area}_i)$ (prior $\\text{Normal}(0, 1)$).
-            - $\\psi_i$: Componente espacial mixto BYM2 (Riebler et al., 2016) que combina estructura ICAR y heterogeneidad no estructurada con parámetro de mezcla $\\rho \\sim \\text{Beta}(0.5, 0.5)$.
+            - $\\beta_{\\text{year}}$: Efecto fijo de año 2025 frente a la línea base 2024 con prior $\\text{Normal}(0, 1)$.
+            - $\\beta_{\\text{area}}$: Coeficiente para $\\log(\\text{Area}_i)$ con prior $\\text{Normal}(0, 1)$.
             - $\\alpha_{disp}$: Parámetro de dispersión de la verosimilitud Binomial Negativa.
-
             
-            #### 2. Distribuciones a Priori (Priors)
-            Las asignaciones a priori para regularizar los parámetros y permitir un muestreo estable son:
+            #### 2. Modelo Estructural de Comparación
+            **Modelo (d): BYM2 Binomial Negativo (Riebler et al., 2016)**
+            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
+            $$\\psi_i = \\sigma_s \\left( \\sqrt{\\rho} \\phi^*_i + \\sqrt{1 - \\rho} \\theta^*_i \\right)$$
+            Donde $\\rho \\sim \\text{Beta}(0.5, 0.5)$ es el parámetro de mezcla espacial.
             
-            - **Intercepto Global:**
-              $$\\alpha \\sim \\text{Normal}(0, 2)$$
-            
-            - **Efecto Fijo Temporal:**
-              $$\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$$
-              
-            - **Parámetro de Mezcla Espacial BYM2:**
-              $$\\rho \\sim \\text{Beta}(0.5, 0.5)$$
-            
-            - **Efecto Espacial Estructurado Escalado:**
-              $$\\phi^* \\sim \\text{ICAR}(W) / \\sqrt{s}$$
-              Donde $s$ es el factor de escala geométrico marginal de la matriz Laplaciana de Guayaquil.
-            
-            - **Parámetro de Dispersión:**
-              $$\\alpha_{disp} \\sim \\text{Exponential}(1.0)$$
-            
-            - **Escala de Desviación Espacial:**
-              $$\\sigma_s \\sim \\text{Exponential}(1.0)$$
+            #### 3. Distribuciones a Priori (Priors)
+            - **Intercepto Global:** $\\alpha \\sim \\text{Normal}(0, 2)$
+            - **Contraste Temporal Anual:** $\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$
+            - **Elasticidad del Área:** $\\beta_{\\text{area}} \\sim \\text{Normal}(0, 1)$
+            - **Escala Estructurada ICAR:** $\\sigma_\\phi \\sim \\text{Exponential}(1.0)$
+            - **Escala No Estructurada:** $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$
+            - **Parámetro de Dispersión:** $\\alpha_{disp} \\sim \\text{Exponential}(1.0)$
+            - **Parámetro de Mezcla BYM2:** $\\rho \\sim \\text{Beta}(0.5, 0.5)$
             """)
             
         # Pestaña 2: Distribuciones Posteriores
@@ -933,7 +954,7 @@ with tab_modelo_bayesiano:
             
             if opcion_post.startswith("Parámetros Globales"):
                 st.markdown("#### Densidades Posteriores de Parámetros Globales")
-                post_vars = [v for v in ['alpha', 'beta_year', 'beta_area', 'sigma_s', 'rho', 'alpha_disp'] if v in trace.posterior]
+                post_vars = [v for v in ['alpha', 'beta_year', 'beta_area', 'sigma_phi', 'sigma_theta', 'sigma_s', 'rho', 'alpha_disp'] if v in trace.posterior]
                 fig, axes = plt.subplots(2, 3, figsize=(12, 7))
                 az.plot_posterior(trace, var_names=post_vars, ax=axes)
                 plt.tight_layout()
@@ -944,9 +965,11 @@ with tab_modelo_bayesiano:
                 - **alpha:** Tasa media global cantonal en escala logarítmica (año 2024).
                 - **beta_year:** Variación temporal neta en 2025 frente a la línea base 2024.
                 - **beta_area:** Elasticidad estimada del área física territorial sobre el conteo delictivo.
-                - **sigma_s:** Desviación estándar total del componente espacial BYM2.
-                - **rho:** Parámetro de mezcla espacial con prior Beta(0.5, 0.5); su intervalo posterior refleja la proporción de variabilidad explicada por contigüidad.
-                - **alpha_disp:** Parámetro de forma de la Binomial Negativa que absorbe la sobredispersión.
+                - **sigma_phi:** Escala del componente espacial estructurado ICAR (Modelo de referencia c).
+                - **sigma_theta:** Escala de la heterogeneidad zonal no estructurada (Modelo de referencia c).
+                - **sigma_s:** Desviación estándar total del componente espacial BYM2 (Modelo comparativo d).
+                - **rho:** Parámetro de mezcla espacial con prior Beta(0.5, 0.5) en el modelo BYM2. *Aviso metodológico:* en ADVI converge a ~0.027 y en NUTS a ~0.813; por tanto, su estimación bajo ADVI no es fiable para cuantificar la proporción de varianza espacial por contigüidad.
+                - **alpha_disp:** Parámetro de dispersión de la verosimilitud Binomial Negativa.
                 """)
                 
             elif opcion_post == "Efectos Espaciales de Subcircuitos (phi)":
@@ -1152,25 +1175,34 @@ with tab_modelo_bayesiano:
             ])
             
             with nuts_tab1:
-                st.markdown("#### Tabla Comparativa de Parámetros: ADVI vs. NUTS")
+                st.markdown("#### Tabla Comparativa de Parámetros: ADVI vs. NUTS (Modelos c y d)")
                 nuts_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
                 if os.path.exists(nuts_comp_path):
                     try:
                         df_nuts_comp = pd.read_excel(nuts_comp_path)
-                        st.dataframe(df_nuts_comp.style.format({
-                            col: "{:.4f}" for col in df_nuts_comp.columns if col != 'Parámetro' and df_nuts_comp[col].dtype in ['float64', 'float32']
-                        }), use_container_width=True)
-                        st.markdown("""
-                        **Hallazgos Clave de la Validación:**
-                        - Las **medias posteriores** estimadas por ADVI y NUTS son altamente consistentes en todos los parámetros estructurales ($\alpha$, $\beta_{\\text{year}}$, $\beta_{\\text{area}}$, $\sigma_s$, $\rho$, $\alpha_{disp}$).
-                        - El **ratio de incertidumbre** ($SD_{\\text{ADVI}} / SD_{\\text{NUTS}}$) documenta empíricamente la leve subestimación de varianza en la cola típica de la aproximación de campo medio, confirmando la validez y honestidad metodológica del enfoque variacional.
+                        st.dataframe(df_nuts_comp, use_container_width=True)
+                        
+                        st.warning("""
+                        ⚠️ **Aviso Metodológico Riguroso sobre Hiperparámetros:**
+                        - **Efecto de Año y Coeficientes Estructurales:** ADVI recupera con alta precisión el contraste fijo de año ($\\beta_{\\text{year}}$) y la elasticidad del área ($\\beta_{\\text{area}}$), con diferencias relativas mínimas frente a NUTS.
+                        - **Subestimación de Incertidumbre:** La desviación estándar posterior bajo ADVI es consistentemente menor a la de NUTS (reducción del 40% al 70%), reflejando la conocida contracción de incertidumbre en las colas propia de las aproximaciones variacionales gaussianas de campo medio.
+                        - **Distorsión en Hiperparámetros de Escala y Mezcla:** ADVI distorsiona significativamente los hiperparámetros ($\\sigma_s, \\rho, \\alpha_{disp}$). En particular, en el modelo BYM2 el parámetro de mezcla $\\rho$ se contrae a ~0.027 bajo ADVI frente a ~0.813 bajo NUTS. Por tanto, no se puede afirmar que ADVI sea 'perfectamente apto' para la inferencia de hiperparámetros, y sus estimaciones deben presentarse siempre junto a las de NUTS.
                         """)
                     except Exception as e:
                         st.error(f"Error al cargar la tabla de validación ADVI vs. NUTS: {e}")
                 else:
                     st.info("La tabla comparativa ADVI vs. NUTS se generará al ejecutar `python run_pipeline.py`.")
                     
-                st.markdown("#### Dispersión y Correlación de Riesgos Relativos (RR) por Subcircuito")
+                st.markdown("#### Correlación de Riesgos Relativos Espaciales (RR) por Subcircuito (ADVI vs. NUTS)")
+                corr_path = os.path.join(config.TABLES_DIR, "tabla_correlacion_rr_advi_nuts.xlsx")
+                if os.path.exists(corr_path):
+                    try:
+                        df_corr_rr = pd.read_excel(corr_path)
+                        st.dataframe(df_corr_rr, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Error al cargar tabla de correlaciones RR: {e}")
+                        
+                st.markdown("#### Dispersión y Ajuste de Riesgos Relativos (RR) por Subcircuito (244 Subcircuitos)")
                 rr_scatter_img = os.path.join(config.FIGURES_DIR, "Figura_dispersion_rr_advi_nuts.png")
                 if os.path.exists(rr_scatter_img):
                     st.image(rr_scatter_img, use_column_width=True)
@@ -1180,17 +1212,15 @@ with tab_modelo_bayesiano:
             with nuts_tab2:
                 st.markdown("#### Evaluación de Estabilidad Estocástica entre Semillas Independientes (ADVI)")
                 st.markdown("""
-                Para verificar que el ajuste de ADVI no queda atrapado en óptimos locales espurios, el modelo final BYM2 se evaluó bajo 3 semillas aleatorias independientes (42, 123 y 999) con criterio de convergencia $\\Delta \\text{ELBO} < 10^{-4}$.
+                Para verificar la robustez estocástica y descartar la trampa en óptimos locales espurios, el modelo de referencia (c) (Besag ICAR + No Estructurado) se evaluó bajo 3 semillas aleatorias independientes (42, 123 y 999) bajo el **criterio formal de convergencia unificado**: la variación de la media móvil del ELBO en las últimas 5,000 iteraciones debe ser menor al 0.1% (< 0.001) respecto de las 5,000 previas.
                 """)
                 seed_stab_path = os.path.join(config.TABLES_DIR, "tabla_estabilidad_semillas_advi.xlsx")
                 if os.path.exists(seed_stab_path):
                     try:
                         df_seed_stab = pd.read_excel(seed_stab_path)
                         df_seed_stab['Semilla'] = df_seed_stab['Semilla'].astype(str)
-                        st.dataframe(df_seed_stab.style.format({
-                            col: "{:.4f}" for col in df_seed_stab.columns if col != 'Semilla' and df_seed_stab[col].dtype in ['float64', 'float32']
-                        }), use_container_width=True)
-                        st.success("✅ La variación del ELBO final y de las estimaciones posteriores entre semillas es mínima, confirmando la robustez y replicabilidad del ajuste variacional.")
+                        st.dataframe(df_seed_stab, use_container_width=True)
+                        st.success("✅ Estabilidad verificada: El criterio de convergencia formal se evalúa uniformemente en todas las semillas, reportando la media y desviación estándar de los parámetros y del ELBO.")
                     except Exception as e:
                         st.error(f"Error al cargar la tabla de estabilidad de semillas: {e}")
                 else:

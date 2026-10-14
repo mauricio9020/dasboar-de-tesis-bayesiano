@@ -47,6 +47,11 @@ def connect_graph_islands(w: libpysal.weights.W, gdf: gpd.GeoDataFrame) -> libpy
                     neighbors[best_c].append(best_m)
                 if best_c not in neighbors[best_m]:
                     neighbors[best_m].append(best_c)
+                nom_c = gdf.iloc[best_c]['subcircuito_nom'] if 'subcircuito_nom' in gdf.columns else f"idx_{best_c}"
+                cod_c = gdf.iloc[best_c]['cod_subcircu'] if 'cod_subcircu' in gdf.columns else f"idx_{best_c}"
+                nom_m = gdf.iloc[best_m]['subcircuito_nom'] if 'subcircuito_nom' in gdf.columns else f"idx_{best_m}"
+                cod_m = gdf.iloc[best_m]['cod_subcircu'] if 'cod_subcircu' in gdf.columns else f"idx_{best_m}"
+                logger.info(f"Conexión geográfica de componente/isla: Subcircuito {cod_c} ({nom_c}) conectado al vecino continental {cod_m} ({nom_m}) [Distancia euclidiana: {min_dist:.1f} m].")
         w_connected = libpysal.weights.W(neighbors)
         return w_connected
     return w
@@ -153,24 +158,30 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     # Estandarizar la matriz por filas
     w_selected.transform = 'r'
     
-    # Variable de conteo y tasa para el análisis
-    y = gdf_total['homicidios_totales'].values
+    # 2. Variables de análisis:
+    # (a) Homicidios 2024-2025 (período del modelo bayesiano - Principal para la tesis)
+    # (b) Homicidios 2024-2026 (período completo - Análisis exploratorio complementario)
+    y_main = gdf_total['homicidios_2024_2025'].values
+    y_full = gdf_total['homicidios_totales'].values
     
-    # 2. Moran Global con semilla fija
-    logger.info("Calculando Moran's I Global con 9999 permutaciones...")
+    # 2.1 Moran Global Versión (a): Período del Modelo 2024-2025 (Principal)
+    logger.info("Calculando Moran's I Global versión (a): Homicidios 2024-2025 (9999 permutaciones, semilla 42)...")
     np.random.seed(config.RANDOM_SEED)
-    moran = Moran(y, w_selected, permutations=9999)
+    moran_main = Moran(y_main, w_selected, permutations=9999)
+    logger.info(f"MORAN GLOBAL (a) 2024-2025 (Principal): I={moran_main.I:.4f}, E(I)={moran_main.EI:.4f}, z={moran_main.z_sim:.4f}, p-valor={moran_main.p_sim:.4f}")
     
-    logger.info(f"Resultados Moran Global: I={moran.I:.4f}, E(I)={moran.EI:.4f}, z={moran.z_sim:.4f}, p-valor={moran.p_sim:.4f}")
-    
-    # 3. Moran Local (LISA)
-    logger.info("Calculando LISA (Moran Local) con 9999 permutaciones...")
+    # 2.2 Moran Global Versión (b): Período Completo 2024-2026 (Exploratorio)
+    logger.info("Calculando Moran's I Global versión (b): Homicidios 2024-2026 Completo (9999 permutaciones, semilla 42)...")
     np.random.seed(config.RANDOM_SEED)
-    lisa = Moran_Local(y, w_selected, permutations=9999)
+    moran_full = Moran(y_full, w_selected, permutations=9999)
+    logger.info(f"MORAN GLOBAL (b) 2024-2026 (Exploratorio): I={moran_full.I:.4f}, E(I)={moran_full.EI:.4f}, z={moran_full.z_sim:.4f}, p-valor={moran_full.p_sim:.4f}")
     
-    # Clasificación LISA
-    # lisa.q contiene el cuadrante: 1=HH, 2=LH, 3=LL, 4=HL
-    # p_sim contiene el p-valor
+    # 3. Moran Local (LISA) sobre la variable principal (Homicidios 2024-2025)
+    logger.info("Calculando LISA (Moran Local) para Homicidios 2024-2025 con 9999 permutaciones...")
+    np.random.seed(config.RANDOM_SEED)
+    lisa = Moran_Local(y_main, w_selected, permutations=9999)
+    
+    # Clasificación LISA: 1=HH, 2=LH, 3=LL, 4=HL
     quad_labels = {1: 'HIGH-HIGH (HOTSPOT)', 2: 'LOW-HIGH (OUTLIER)', 3: 'LOW-LOW (COLDSPOT)', 4: 'HIGH-LOW (OUTLIER)'}
     
     lisa_cats = []
@@ -190,19 +201,19 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     esda_geojson_path = os.path.join(config.CLEAN_DATA_DIR, "subcircuitos_esda.geojson")
     gdf_total.to_crs("EPSG:4326").to_file(esda_geojson_path, driver='GeoJSON')
     
-    # 4. Gráfico 11: Moran Scatterplot
+    # 4. Gráfico 11: Moran Scatterplot (alineado con la variable principal 2024-2025)
     plt.figure(figsize=(8, 6))
-    y_std = (y - np.mean(y)) / np.std(y)
-    y_lag = libpysal.weights.spatial_lag.lag_spatial(w_selected, y)
+    y_std = (y_main - np.mean(y_main)) / np.std(y_main)
+    y_lag = libpysal.weights.spatial_lag.lag_spatial(w_selected, y_main)
     y_lag_std = (y_lag - np.mean(y_lag)) / np.std(y_lag)
     
     sns.regplot(x=y_std, y=y_lag_std, ci=None, line_kws={'color': 'darkred', 'linewidth': 1.5},
                 scatter_kws={'color': 'navy', 'alpha': 0.6, 'edgecolor': 'white'})
     plt.axhline(0, color='gray', linestyle='--', linewidth=0.8)
     plt.axvline(0, color='gray', linestyle='--', linewidth=0.8)
-    plt.title(f"Figura 11: Moran Scatterplot de Homicidios (Moran's I = {moran.I:.4f})")
-    plt.xlabel("Homicidios Estandarizados ($z_i$)")
-    plt.ylabel("Lag Espacial Estandarizado ($W z_i$)")
+    plt.title(f"Figura 11: Moran Scatterplot de Homicidios 2024-2025 (Moran's I = {moran_main.I:.4f})", fontsize=11, fontweight='bold')
+    plt.xlabel("Homicidios 2024-2025 Estandarizados ($z_i$)", fontsize=10)
+    plt.ylabel("Lag Espacial Estandarizado ($W z_i$)", fontsize=10)
     
     # Guardar
     png_path = os.path.join(config.FIGURES_DIR, "Figura11_moran_scatterplot.png")
@@ -212,9 +223,8 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     plt.savefig(pdf_path, format='pdf')
     plt.close()
     
-    # 5. Gráfico 12: Mapa LISA
+    # 5. Gráfico 12: Mapa LISA (alineado con la variable principal 2024-2025)
     plt.figure(figsize=(10, 10))
-    # Definir colores fijos para cada categoría
     colors_dict = {
         'HIGH-HIGH (HOTSPOT)': '#d7191c',  # Rojo
         'LOW-LOW (COLDSPOT)': '#2c7bb6',   # Azul
@@ -232,7 +242,7 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
         if not sub_gdf.empty:
             sub_gdf.plot(color=color, edgecolor='black', linewidth=0.4, ax=plt.gca(), label=cat)
             
-    plt.title("Figura 12: Mapa de Agrupamiento LISA (Hotspots y Coldspots)")
+    plt.title("Figura 12: Mapa de Agrupamiento LISA (Homicidios 2024-2025 - Período del Modelo)", fontsize=12, fontweight='bold')
     
     # Leyenda personalizada
     import matplotlib.patches as mpatches
@@ -247,32 +257,37 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     plt.savefig(pdf_map_path, format='pdf', bbox_inches='tight')
     plt.close()
     
-    # Guardar métricas del Moran Global a Excel
+    # 6. Guardar métricas del Moran Global a Excel (reportando ambas versiones formalmente)
     mean_neigh_queen = float(np.mean([len(v) for v in w_selected.neighbors.values()]))
-    logger.info(f"MORAN GLOBAL (Matriz Queen final con 4 islas conectadas): I={moran.I:.4f}, E(I)={moran.EI:.4f}, z={moran.z_sim:.4f}, p-valor={moran.p_sim:.4f} (permutaciones={moran.permutations}, semilla={config.RANDOM_SEED}, vecinos={mean_neigh_queen:.2f})")
     
-    df_moran_global = pd.DataFrame({
-        "Métrica": [
-            "Indice Moran I",
-            "Esperanza E(I)",
-            "Z-Score",
-            "Pseudo p-valor",
-            "Permutaciones",
-            "Semilla Aleatoria",
-            "Matriz Espacial Utilizada",
-            "Promedio Vecinos Matriz"
-        ],
-        "Valor": [
-            round(moran.I, 4),
-            round(moran.EI, 4),
-            round(moran.z_sim, 4),
-            round(moran.p_sim, 4),
-            moran.permutations,
-            config.RANDOM_SEED,
-            "Queen (4 islas de Puná conectadas)",
-            round(mean_neigh_queen, 2)
-        ]
-    })
+    df_moran_global = pd.DataFrame([
+        {
+            "Version": "(a) Periodo del Modelo (Principal)",
+            "Variable": "Homicidios 2024-2025",
+            "Indice_Moran_I": round(moran_main.I, 4),
+            "Esperanza_EI": round(moran_main.EI, 4),
+            "Z_Score": round(moran_main.z_sim, 4),
+            "Pseudo_p_valor": round(moran_main.p_sim, 4),
+            "Permutaciones": moran_main.permutations,
+            "Semilla": config.RANDOM_SEED,
+            "Matriz_Espacial": "Queen (4 islas de Puná conectadas)",
+            "Promedio_Vecinos": round(mean_neigh_queen, 2),
+            "Rol_en_Tesis": "Texto principal de la tesis (Capítulos 3 y 4)"
+        },
+        {
+            "Version": "(b) Periodo Completo (Exploratorio)",
+            "Variable": "Homicidios 2024-2026 (Total)",
+            "Indice_Moran_I": round(moran_full.I, 4),
+            "Esperanza_EI": round(moran_full.EI, 4),
+            "Z_Score": round(moran_full.z_sim, 4),
+            "Pseudo_p_valor": round(moran_full.p_sim, 4),
+            "Permutaciones": moran_full.permutations,
+            "Semilla": config.RANDOM_SEED,
+            "Matriz_Espacial": "Queen (4 islas de Puná conectadas)",
+            "Promedio_Vecinos": round(mean_neigh_queen, 2),
+            "Rol_en_Tesis": "Análisis exploratorio complementario"
+        }
+    ])
     
     excel_esda_path = os.path.join(config.TABLES_DIR, "tabla_esda_moran.xlsx")
     with pd.ExcelWriter(excel_esda_path) as writer:
@@ -282,4 +297,4 @@ def run_stage5(gdf_total: gpd.GeoDataFrame) -> tuple:
     logger.info(f"Tablas ESDA guardadas en: {excel_esda_path}")
     logger.info("ETAPA 5: Análisis Espacial Exploratorio (ESDA) finalizado con éxito.")
     
-    return gdf_total, moran, df_comp, df_moran_global
+    return gdf_total, moran_main, df_comp, df_moran_global
