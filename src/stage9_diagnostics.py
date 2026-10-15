@@ -20,7 +20,21 @@ def save_diagnostic_plot(name: str):
     plt.close()
     logger.info(f"Gráfico de diagnóstico guardado: {png_path} y {pdf_path}")
 
-def run_stage9(trace, traces_dict: dict = None) -> dict:
+def get_model_label(name: str) -> str:
+    """Retorna la etiqueta metodológica completa del modelo seleccionado"""
+    if not name:
+        return "Modelo (b) Binomial Negativa (ICAR)"
+    if "Poisson" in name:
+        return "Modelo (a) Poisson Jerárquico"
+    elif "No Estructurado" in name:
+        return "Modelo (c) Binomial Negativa (ICAR + No Estructurado)"
+    elif "BYM2" in name:
+        return "Modelo (d) BYM2 Binomial Negativo (Prior Beta(0.5, 0.5))"
+    elif "Binomial Negativa" in name and "ICAR" in name:
+        return "Modelo (b) Binomial Negativa (ICAR)"
+    return name
+
+def run_stage9(trace, traces_dict: dict = None, model_name: str = None) -> dict:
     """
     Etapa 9: Diagnósticos de Inferencia Variacional (ADVI) y Verificación Posterior
     - Calcula resumen posterior formal ArviZ para las muestras extraídas de la aproximación variacional.
@@ -87,9 +101,12 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
     
     logger.info(f"Diagnóstico Pareto-k: k < 0.5: {n_good_k}, 0.5 <= k <= 0.7: {n_ok_k}, k > 0.7: {n_bad_k} ({pareto_warning})")
     
+    # Determinar nombre del modelo dinámicamente
+    model_display_name = f"{get_model_label(model_name)} [Mejor LOO-CV]"
+    
     # Preparar tabla de convergencia y diagnósticos generales de ADVI
     conv_rows = [
-        {"Diagnóstico": "Modelo Evaluado", "Valor": "Modelo (c) Binomial Negativa (ICAR + No Estructurado) [Mejor LOO-CV]"},
+        {"Diagnóstico": "Modelo Evaluado", "Valor": model_display_name},
         {"Diagnóstico": "Método de Inferencia", "Valor": "ADVI (Automatic Differentiation Variational Inference, Adam lr=0.005)"},
         {"Diagnóstico": "Muestras Posteriores Extraídas", "Valor": int(trace.posterior.dims.get('draw', 2000))},
         {"Diagnóstico": "Criterio de Convergencia", "Valor": "Variación media móvil ELBO últimas 5,000 iteraciones < 0.1%"},
@@ -205,7 +222,7 @@ def run_stage9(trace, traces_dict: dict = None) -> dict:
         logger.warning("No se encontraron muestras en trace.posterior_predictive para generar PPC.")
         
     metrics_info = {}
-    metrics_info["Modelo_Referencia"] = "Modelo (c) Binomial Negativa (ICAR + No Estructurado) [Mejor LOO-CV]"
+    metrics_info["Modelo_Referencia"] = model_display_name
     metrics_info["Metodo_Inferencia"] = "ADVI (Adam lr=0.005)"
     metrics_info["Criterio_Convergencia"] = "Variación media móvil ELBO últimas 5,000 iteraciones < 0.1%"
     metrics_info["ELPD_WAIC"] = float(waic_res.elpd_waic)

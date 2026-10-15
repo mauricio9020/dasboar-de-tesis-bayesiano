@@ -199,9 +199,14 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     create_word_table_from_df(doc, df_compare, "Tabla 5: Comparativa de Ajuste entre Modelos Poisson y Binomial Negativo Frecuentistas", [2.5, 2.0, 2.0])
     
     # 6. Tabla 6: Top 10 Zonas Críticas (Etapa 10)
-    df_top10 = df_rr_top[['subcircuito_nom', 'circuito_nom', 'distrito_nom', 'rr_estimado_mediana', 'probabilidad_excedencia']].head(10).copy()
-    df_top10.columns = ['Subcircuito', 'Circuito', 'Distrito', 'Riesgo Relativo (RR)', 'P(RR > 1.5)']
-    create_word_table_from_df(doc, df_top10, "Tabla 6: Top 10 Subcircuitos con Mayor Riesgo Relativo Estimado mediante el Modelo Bayesiano", [2.0, 1.5, 1.5, 1.5, 1.0])
+    if 'prob_exced_1_5_nuts' in df_rr_top.columns:
+        df_top10 = df_rr_top[['subcircuito_nom', 'circuito_nom', 'distrito_nom', 'rr_estimado_mediana', 'probabilidad_excedencia', 'rr_mediana_nuts', 'prob_exced_1_5_nuts']].head(10).copy()
+        df_top10.columns = ['Subcircuito', 'Circuito', 'Distrito', 'RR (ADVI)', 'P(RR>1.5) ADVI', 'RR (NUTS)', 'P(RR>1.5) NUTS']
+        create_word_table_from_df(doc, df_top10, "Tabla 6: Top 10 Subcircuitos con Mayor Riesgo Relativo: Comparación ADVI vs. NUTS", [1.8, 1.2, 1.2, 1.1, 1.1, 1.1, 1.1])
+    else:
+        df_top10 = df_rr_top[['subcircuito_nom', 'circuito_nom', 'distrito_nom', 'rr_estimado_mediana', 'probabilidad_excedencia']].head(10).copy()
+        df_top10.columns = ['Subcircuito', 'Circuito', 'Distrito', 'Riesgo Relativo (RR)', 'P(RR > 1.5)']
+        create_word_table_from_df(doc, df_top10, "Tabla 6: Top 10 Subcircuitos con Mayor Riesgo Relativo Estimado mediante el Modelo Bayesiano", [2.0, 1.5, 1.5, 1.5, 1.0])
     
     # 7. Tabla 7: Dinámica Espacio-Temporal (Etapa 11)
     df_dyn_summary = df_evol['clasificacion_dinamica'].value_counts().reset_index()
@@ -223,11 +228,12 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     p_disc.paragraph_format.line_spacing = 1.15
     add_paragraph_run(p_disc, "Nota Metodológica sobre Inferencia Variacional (ADVI), Comparación de Modelos y Validación con NUTS:\n", bold=True, size_pt=10.5)
     add_paragraph_run(p_disc, "1. Inferencia Principal mediante ADVI y Criterio Unificado de Convergencia: El método principal de estimación de la tesis es Inferencia Variacional por Diferenciación Automática (ADVI) en PyMC, optimizando el ELBO mediante Adam (learning_rate = 0.005) durante 50,000 iteraciones. Se definió un criterio formal de convergencia unificado: la variación de la media móvil del ELBO en las últimas 5,000 iteraciones respecto a las 5,000 anteriores debe ser menor al 0.1% (< 0.001).\n"
-                              "2. Modelo de Referencia por Capacidad Predictiva: En la comparación formal fuera de muestra (LOO-CV), el Modelo (c) Binomial Negativa (ICAR + heterogeneidad no estructurada Besag et al. 1991) obtiene la mayor densidad predictiva esperada (mejor ELPD_LOO) y se establece como el modelo de referencia metodológica. El Modelo (d) BYM2 con prior Beta(0.5, 0.5) empata estadísticamente (|ΔELPD| < 2·dse), confirmando capacidad predictiva equivalente.\n"
+                              "2. Modelo de Referencia por Capacidad Predictiva y Parsimonia: En la comparación formal fuera de muestra (LOO-CV), el Modelo (b) Binomial Negativa (ICAR) obtiene la mayor densidad predictiva esperada (ELPD_LOO = -1,233.75, SE = 26.76) y el menor número de observaciones con Pareto-k > 0.7 (27 observaciones). El Modelo (c) Besag ICAR + No Estructurado (ELPD_LOO = -1,241.65, SE = 26.96, 38 observaciones k > 0.7) y el Modelo (d) BYM2 (ELPD_LOO = -1,242.92, SE = 26.97) presentan densidades predictivas cercanas. La diferencia entre el Modelo (b) y el Modelo (c) es de 7.90 puntos con dse = 4.18, es decir, menor a dos errores estándar (|ΔELPD| < 2·dse = 8.36). En la práctica ambos modelos empatan estadísticamente; por el principio de parsimonia (Navaja de Ockham: menor número de parámetros libres) y mejor comportamiento diagnóstico de Pareto-k, se selecciona formalmente el Modelo (b) como el modelo ganador de referencia metodológica de la tesis.\n"
                               "3. Parámetro de Mezcla Espacial (rho) y Advertencia Interpretativa: En el modelo BYM2, el parámetro rho con prior Beta(0.5, 0.5) presenta una fuerte discrepancia entre métodos de inferencia: bajo ADVI converge a rho ≈ 0.027, mientras que bajo muestreo exacto NUTS converge a rho ≈ 0.813. Por consiguiente, se advierte explícitamente que la lectura de rho bajo ADVI no es fiable para cuantificar la proporción de varianza espacial atribuible a contigüidad territorial.\n"
                               "4. Diagnóstico de Pareto-k: En paneles cortos (T = 2 años) sobre 244 subcircuitos, la exclusión de una observación modifica la distribución condicional de los efectos latentes locales, elevando las ponderaciones de importancia con valores de k > 0.7. Este comportamiento es una propiedad matemática conocida del estimador PSIS-LOO en modelos jerárquicos espaciales y no denota deficiencia del ajuste global.\n"
                               "5. Contraste Anual (2025 vs. 2024): Al modelar dos años completos, un proceso autorregresivo RW1 no es paramétricamente identificable frente al intercepto cantonal. La especificación de un contraste fijo de año (beta_year con 2024 como referencia) resuelve la identificabilidad y provee una estimación directa de la variación cantonal en 2025.\n"
-                              "6. Validación Metodológica contra NUTS: Como prueba de contraste rigurosa, se ajustó NUTS MCMC tanto para el Modelo (c) como para el Modelo (d). La validación empírica demuestra que ADVI reproduce fielmente el efecto temporal fijo de año (beta_year) y el ordenamiento de los riesgos relativos espaciales (correlación de Pearson r > 0.98 y Spearman rho > 0.98). Sin embargo, ADVI subestima la incertidumbre posterior (desviaciones estándar reducidas entre 40% y 70%) y distorsiona los hiperparámetros de escala y dispersión (sigma_s, rho, alpha_disp). En consecuencia, para la toma de decisiones territoriales y reporte científico, los hiperparámetros deben reportarse comparando ambos métodos.", size_pt=9.5)
+                              "6. Validación Metodológica contra NUTS y Calibración de Incertidumbre: Como prueba de contraste rigurosa, se ajustó NUTS MCMC para el Modelo (b) ganador, así como para los Modelos (c) y (d). La validación empírica demuestra que ADVI reproduce fielmente el ordenamiento de los riesgos relativos espaciales (correlación de Pearson r > 0.98 y Spearman rho > 0.98). Sin embargo, ADVI subestima la dispersión de la distribución posterior (desviaciones estándar reducidas entre 40% y 70%), provocando que las probabilidades de excedencia P(RR > 1.5) bajo ADVI se concentren artificialmente en 1.00 en zonas de alto riesgo con intervalos de credibilidad estrechos (ej. Nuevo Guayaquil 3: RR = 4.40, IC [2.79, 6.91]). El cálculo complementario bajo NUTS MCMC restituye la verdadera incertidumbre posterior y provee probabilidades calibradas para la toma de decisiones policiales.\n"
+                              "7. Dinámica Espacio-Temporal y Ausencia de Interacción: El modelo ajustado tiene estructura aditiva sin término de interacción espacio-temporal delta_{it}. Como consecuencia matemática directa, los riesgos relativos espaciales estimados para cada subcircuito son idénticos entre 2024 y 2025 (RR_{i, 2024} = RR_{i, 2025}, como Guasmo 1 con 4.077 en ambos años). Por tanto, la clasificación de 'hotspot persistente' en la Tabla 7 coincide con el conjunto de subcircuitos de alto riesgo (RR >= 1.2) y no provee evidencia de trayectorias locales divergentes. Esta formulación se presenta explícitamente como una limitación metodológica del modelo aditivo.", size_pt=9.5)
 
     # 9. Tabla 9: Contraste Anual
     excel_temp_path = os.path.join(config.TABLES_DIR, "tabla_contraste_anual.xlsx")
@@ -263,7 +269,7 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     if os.path.exists(excel_nuts_comp):
         try:
             df_nuts_c = pd.read_excel(excel_nuts_comp)
-            create_word_table_from_df(doc, df_nuts_c, "Tabla 12: Validación Metodológica: Comparación Paramétrica ADVI vs. NUTS para Modelos (c) y (d)")
+            create_word_table_from_df(doc, df_nuts_c, "Tabla 12: Validación Metodológica: Comparación Paramétrica ADVI vs. NUTS para Modelos (b), (c) y (d)")
         except Exception as e:
             logger.warning(f"No se pudo adjuntar Tabla 12 en Word: {e}")
 
@@ -272,7 +278,7 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
     if os.path.exists(excel_corr_comp):
         try:
             df_corr_c = pd.read_excel(excel_corr_comp)
-            create_word_table_from_df(doc, df_corr_c, "Tabla 13: Correlación de Riesgos Relativos Espaciales ADVI vs. NUTS por Subcircuito (N=244)")
+            create_word_table_from_df(doc, df_corr_c, "Tabla 13: Correlación de Riesgos Relativos Espaciales ADVI vs. NUTS por Subcircuito (Modelos b, c y d, N=244)")
         except Exception as e:
             logger.warning(f"No se pudo adjuntar Tabla 13 en Word: {e}")
 

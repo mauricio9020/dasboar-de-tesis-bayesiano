@@ -821,24 +821,27 @@ with tab_bayes:
         # Leer diagnósticos de convergencia reales
         diag_path = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_bayesianos.xlsx")
         draws_cnt_val = "2,000"
-        crit_tol_val = "1e-4"
+        crit_tol_val = "Variación 5k < 0.1%"
         k_gt_07_val = "N/D"
         k_adv_val = "N/D"
+        model_eval_val = "Modelo (b) Binomial Negativa (ICAR) [Mejor LOO-CV]"
         if os.path.exists(diag_path):
             try:
                 df_diag_conv = pd.read_excel(diag_path, sheet_name="Diagnosticos_Convergencia")
                 diag_map = dict(zip(df_diag_conv['Diagnóstico'], df_diag_conv['Valor']))
                 draws_cnt_val = f"{diag_map.get('Muestras Posteriores Extraídas', 2000):,}"
-                crit_tol_val = str(diag_map.get('Criterio de Convergencia', 'CheckParametersConvergence (tolerancia 1e-4)'))
+                crit_tol_val = str(diag_map.get('Criterio de Convergencia', 'Variación 5k < 0.1%'))
                 k_gt_07_val = f"{diag_map.get('Pareto-k > 0.7 (Observaciones)', 'N/D')}"
                 k_adv_val = f"{diag_map.get('Advertencia Pareto-k', 'N/D')}"
+                model_eval_val = str(diag_map.get('Modelo Evaluado', model_eval_val))
             except Exception:
                 pass
                 
         st.markdown(f"""
-        - **Método de Inferencia:** ADVI (Automatic Differentiation Variational Inference).
+        - **Modelo de Referencia Evaluado:** **{model_eval_val}**
+        - **Método de Inferencia:** ADVI (Automatic Differentiation Variational Inference, Adam lr=0.005).
         - **Muestras Posteriores Extraídas:** {draws_cnt_val} draws de la aproximación variacional.
-        - **Criterio de Parada:** {crit_tol_val}.
+        - **Criterio de Convergencia:** {crit_tol_val}.
         - **ELPD-WAIC:** **{crit_waic_str}** (Escala logarítmica).
         - **ELPD-LOO:** **{crit_loo_str}** (Escala logarítmica).
         - **Observaciones con Pareto-k > 0.7:** **{k_gt_07_val}**
@@ -901,19 +904,16 @@ with tab_modelo_bayesiano:
             El modelo ajustado para estimar la tasa predictiva y el riesgo relativo de muertes violentas en Guayaquil se formula como un modelo Bayesiano Jerárquico Espacio-Temporal con verosimilitud **Binomial Negativa** para controlar la sobredispersión territorial extrema.
             
             #### 1. Modelo de Referencia Seleccionado (Mejor LOO-CV)
-            **Modelo (c): Binomial Negativa con ICAR + Efecto No Estructurado (Besag et al., 1991)**
+            **Modelo (b): Binomial Negativa con ICAR**
             
             - **Verosimilitud (Likelihood):**
               $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
             
             - **Función de Enlace (Log-Link):**
-              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i$$
+              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$$
             
             - **Componente Espacial Estructurado (ICAR):**
               $$\\phi \\sim \\text{ICAR}(W, \\sigma_\\phi^2)$$
-            
-            - **Heterogeneidad Zonal No Estructurada:**
-              $$\\theta_i \\sim \\text{Normal}(0, \\sigma_\\theta^2)$$
               
             Donde:
             - $Y_{it}$: Número de homicidios observados en el subcircuito $i$ en el año $t$.
@@ -921,22 +921,28 @@ with tab_modelo_bayesiano:
             - $\\alpha$: Intercepto global (tasa basal cantonal en 2024).
             - $\\beta_{\\text{year}}$: Efecto fijo de año 2025 frente a la línea base 2024 con prior $\\text{Normal}(0, 1)$.
             - $\\beta_{\\text{area}}$: Coeficiente para $\\log(\\text{Area}_i)$ con prior $\\text{Normal}(0, 1)$.
-            - $\\alpha_{disp}$: Parámetro de dispersión de la verosimilitud Binomial Negativa.
+            - $\\sigma_\\phi$: Escala del efecto espacial intrínseco autorregresivo condicional con prior $\\text{Exponential}(1.0)$.
+            - $\\alpha_{disp}$: Parámetro de dispersión de la verosimilitud Binomial Negativa con prior $\\text{Exponential}(1.0)$.
             
-            #### 2. Modelo Estructural de Comparación
-            **Modelo (d): BYM2 Binomial Negativo (Riebler et al., 2016)**
-            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
-            $$\\psi_i = \\sigma_s \\left( \\sqrt{\\rho} \\phi^*_i + \\sqrt{1 - \\rho} \\theta^*_i \\right)$$
-            Donde $\\rho \\sim \\text{Beta}(0.5, 0.5)$ es el parámetro de mezcla espacial.
+            *Justificación Metodológica:* El Modelo (b) obtiene el mayor $\\text{ELPD}_{\\text{LOO}} = -1,233.75$ y la menor cantidad de observaciones con Pareto-$k > 0.7$ (27 observaciones). La diferencia frente al Modelo (c) ($-1,241.65$) es de 7.90 puntos con $dse = 4.18$ ($|\\Delta| < 2 \\cdot dse = 8.36$), lo que representa un empate estadístico. Por parsimonia (menor número de parámetros al no requerir $\\sigma_\\theta$ ni efectos no estructurados $\\theta_i$), se selecciona el Modelo (b) como el modelo de referencia final de la tesis.
+            
+            #### 2. Modelos Estructurales Comparativos
+            - **Modelo (c): Besag ICAR + Efecto No Estructurado (Besag et al., 1991):**
+              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i$$
+              donde $\\theta_i \\sim \\text{Normal}(0, \\sigma_\\theta^2)$ con $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$.
+            - **Modelo (d): BYM2 Binomial Negativo (Riebler et al., 2016):**
+              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
+              $$\\psi_i = \\sigma_s \\left( \\sqrt{\\rho} \\phi^*_i + \\sqrt{1 - \\rho} \\theta^*_i \\right)$$
+              donde $\\rho \\sim \\text{Beta}(0.5, 0.5)$ es el parámetro de mezcla espacial.
             
             #### 3. Distribuciones a Priori (Priors)
             - **Intercepto Global:** $\\alpha \\sim \\text{Normal}(0, 2)$
             - **Contraste Temporal Anual:** $\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$
             - **Elasticidad del Área:** $\\beta_{\\text{area}} \\sim \\text{Normal}(0, 1)$
             - **Escala Estructurada ICAR:** $\\sigma_\\phi \\sim \\text{Exponential}(1.0)$
-            - **Escala No Estructurada:** $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$
             - **Parámetro de Dispersión:** $\\alpha_{disp} \\sim \\text{Exponential}(1.0)$
-            - **Parámetro de Mezcla BYM2:** $\\rho \\sim \\text{Beta}(0.5, 0.5)$
+            - **Escala No Estructurada (Modelo c):** $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$
+            - **Escala Total y Mezcla (Modelo d):** $\\sigma_s \\sim \\text{Exponential}(1.0)$, $\\rho \\sim \\text{Beta}(0.5, 0.5)$
             """)
             
         # Pestaña 2: Distribuciones Posteriores
@@ -1126,8 +1132,9 @@ with tab_modelo_bayesiano:
                         
                         st.info("""
                         > 📌 **Nota Metodológica sobre Selección de Modelos:**
-                        > La diferencia de ELPD entre el modelo (c) (Besag ICAR + $\\theta$) y el modelo (d) (BYM2) es de apenas **0.10 puntos** con una desviación estándar de error $dse = 1.18$.
-                        > Al ser la diferencia sustancialmente menor que su error estándar, **no es estadísticamente significativa**; por lo tanto, no se puede afirmar que BYM2 supere al modelo (c). Ambos modelos presentan una capacidad predictiva equivalente fuera de muestra.
+                        > En la comparación formal LOO-CV, el **Modelo (b) Binomial Negativa (ICAR)** alcanza la mayor densidad predictiva esperada fuera de muestra (ELPD_LOO = -1,233.75, SE = 26.76, 27 observaciones k > 0.7).
+                        > La diferencia frente al Modelo (c) (-1,241.65) es de **7.90 puntos** con error estándar de la diferencia $dse = 4.18$.
+                        > Al ser la diferencia menor que dos errores estándar ($|\\Delta| = 7.90 < 2 \\cdot dse = 8.36$), **ambos modelos empatan estadísticamente**. Por parsimonia (menor complejidad paramétrica y mejor comportamiento diagnóstico de Pareto-k), el **Modelo (b)** se establece como el modelo final ganador de referencia de la tesis.
                         """)
                         
                         st.markdown("""
@@ -1138,7 +1145,7 @@ with tab_modelo_bayesiano:
                            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$$
                            Donde $\\phi \\sim \\text{ICAR}(W)$ y $\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$.
                            
-                        2. **Binomial Negativa Jerárquico (ICAR):**
+                        2. **Binomial Negativa Jerárquico (ICAR) [Modelo Ganador]:**
                            $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
                            $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$$
                            $$\\text{Var}(Y_{it}) = \\mu_{it} + \\frac{\\mu_{it}^2}{\\alpha_{disp}}$$
@@ -1165,8 +1172,9 @@ with tab_modelo_bayesiano:
             st.markdown("""
             **Justificación Metodológica:**
             - **ADVI (Automatic Differentiation Variational Inference)** es el método de inferencia principal de la tesis por su alta eficiencia computacional en modelos espaciales jerárquicos de alta dimensión ($V=244$ nodos, múltiples hiperparámetros de escala y sobredispersión).
-            - **NUTS (No-U-Turn Sampler, MCMC)** se utiliza estrictamente como **patrón de validación metodológica** sobre el modelo final seleccionado (BYM2), empleando exactamente la misma formulación y los mismos priors.
-            - Esta validación verifica que la aproximación variacional gaussiana de campo medio recupera adecuadamente las medias posteriores y los riesgos relativos espaciales sin sesgar la identificación de hotspots ni la toma de decisiones.
+            - **NUTS (No-U-Turn Sampler, MCMC)** se utiliza estrictamente como **patrón de validación metodológica** sobre el modelo de referencia ganador (Modelo b: Binomial Negativa ICAR), así como sobre los Modelos (c) y (d), empleando exactamente la misma formulación y los mismos priors.
+            - Esta validación demuestra que ADVI reproduce con alta fidelidad el ordenamiento de los riesgos relativos espaciales ($r > 0.98, \\rho > 0.98$) y los coeficientes fijos ($\\beta_{\\text{year}}, \\beta_{\\text{area}}$).
+            - **Calibración de Incertidumbre y Probabilidades de Excedencia:** Debido a la conocida subestimación de incertidumbre posterior en ADVI (desviaciones estándar reducidas entre 40% y 70%), las probabilidades de excedencia $P(RR > 1.5)$ bajo ADVI se concentran artificialmente en 1.00 en zonas de alto riesgo con intervalos estrechos (ej. Nuevo Guayaquil 3: RR = 4.40, IC [2.79, 6.91]). El cálculo de estas probabilidades mediante NUTS para el modelo final restituye la dispersión posterior real y proporciona probabilidades calibradas.
             """)
             
             nuts_tab1, nuts_tab2 = st.tabs([
@@ -1175,7 +1183,7 @@ with tab_modelo_bayesiano:
             ])
             
             with nuts_tab1:
-                st.markdown("#### Tabla Comparativa de Parámetros: ADVI vs. NUTS (Modelos c y d)")
+                st.markdown("#### Tabla Comparativa de Parámetros: ADVI vs. NUTS (Modelos b, c y d)")
                 nuts_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
                 if os.path.exists(nuts_comp_path):
                     try:
@@ -1212,7 +1220,7 @@ with tab_modelo_bayesiano:
             with nuts_tab2:
                 st.markdown("#### Evaluación de Estabilidad Estocástica entre Semillas Independientes (ADVI)")
                 st.markdown("""
-                Para verificar la robustez estocástica y descartar la trampa en óptimos locales espurios, el modelo de referencia (c) (Besag ICAR + No Estructurado) se evaluó bajo 3 semillas aleatorias independientes (42, 123 y 999) bajo el **criterio formal de convergencia unificado**: la variación de la media móvil del ELBO en las últimas 5,000 iteraciones debe ser menor al 0.1% (< 0.001) respecto de las 5,000 previas.
+                Para verificar la robustez estocástica y descartar la trampa en óptimos locales espurios, el modelo de referencia ganador (b) (Binomial Negativa ICAR) se evaluó bajo 3 semillas aleatorias independientes (42, 123 y 999) bajo el **criterio formal de convergencia unificado**: la variación de la media móvil del ELBO en las últimas 5,000 iteraciones debe ser menor al 0.1% (< 0.001) respecto de las 5,000 previas.
                 """)
                 seed_stab_path = os.path.join(config.TABLES_DIR, "tabla_estabilidad_semillas_advi.xlsx")
                 if os.path.exists(seed_stab_path):
@@ -1347,6 +1355,13 @@ with tab_modelo_bayesiano:
             - **hdi_3% / hdi_97%:** Intervalo de credibilidad de densidad posterior más alta al 95% (HDI).
             - **mcse_mean / mcse_sd:** Error estándar Monte Carlo de las 2,000 extracciones variacionales.
             - Para la comparación rigurosa con cadenas MCMC y el factor de reducción de escala $\\hat{R}$, consultar la **Pestaña 5: Validación ADVI vs. NUTS**.
+            """)
+            
+            st.info("""
+            ⚠️ **Nota Metodológica sobre Dinámica Espacio-Temporal y Hotspots:**
+            El modelo de referencia posee una estructura puramente aditiva: $\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t=2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$.
+            Al no incluir un término de interacción espacio-temporal $\\delta_{it}$ (Knorr-Held, 2000), el riesgo relativo espacial de cada subcircuito es matemáticamente constante en el tiempo ($RR_{i, 2024} = RR_{i, 2025}$, ej. Guasmo 1 tiene 4.077 en ambos años).
+            Por lo tanto, la categoría de 'hotspot persistente' no refleja trayectorias locales dinámicas y se presenta formalmente en la tesis como una limitación metodológica del modelo aditivo.
             """)
 
 # ================= TAB 4: SIMULADOR TÁCTICO DE RIESGO =================

@@ -266,22 +266,26 @@ def build_model_d(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area_obs, 
         y_obs = pm.NegativeBinomial('y_obs', mu=mu, alpha=alpha_disp, observed=homicidios_obs)
     return model_d
 
-def evaluate_seed_stability(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs, seeds=[42, 123, 999], n_iter=50000, lr=0.005, tol_rel_5k=0.001, seed_42_result=None):
+def evaluate_seed_stability(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs, seeds=[42, 123, 999], n_iter=50000, lr=0.005, tol_rel_5k=0.001, seed_42_result=None, model_type="b"):
     """
-    Evalúa la estabilidad de la inferencia ADVI en el Modelo de Referencia (c) (ICAR + No Estructurado)
+    Evalúa la estabilidad de la inferencia ADVI en el Modelo de Referencia ganador (Modelo b: Binomial Negativa ICAR)
     corriendo con 3 semillas aleatorias distintas bajo el criterio de convergencia unificado (< 0.1% en últimas 5k).
-    Reporta la estabilidad del ELBO y de los parámetros estimados (alpha, beta_year, beta_area, sigma_phi, sigma_theta, alpha_disp).
+    Reporta la estabilidad del ELBO y de los parámetros estimados (alpha, beta_year, beta_area, sigma_phi, alpha_disp).
     """
-    logger.info(f"Iniciando evaluación de estabilidad del modelo de referencia con {len(seeds)} semillas: {seeds}...")
+    label_mod = "Modelo (b) ICAR" if model_type == "b" else "Modelo (c) Besag"
+    logger.info(f"Iniciando evaluación de estabilidad de {label_mod} con {len(seeds)} semillas: {seeds}...")
     seed_records = []
     
     for s in seeds:
         if s == 42 and seed_42_result is not None:
             approx, tr, elbo_h, f_elbo, n_act, conv, rel_5k_pct = seed_42_result
         else:
-            m = build_model_c(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs)
+            if model_type == "b":
+                m = build_model_b(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs)
+            else:
+                m = build_model_c(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs)
             approx, tr, elbo_h, f_elbo, n_act, conv, rel_5k_pct = fit_advi_model(
-                m, f"Modelo (c) Besag (Semilla {s})", n_iter=n_iter, lr=lr, tol_rel_5k=tol_rel_5k, seed=s, draws=2000
+                m, f"{label_mod} (Semilla {s})", n_iter=n_iter, lr=lr, tol_rel_5k=tol_rel_5k, seed=s, draws=2000
             )
         
         record = {
@@ -289,20 +293,12 @@ def evaluate_seed_stability(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, 
             'ELBO_Final': round(f_elbo, 2),
             'Variacion_ELBO_Ultimas_5k_Pct': round(rel_5k_pct, 4),
             'Criterio_Convergencia': 'Var 5k < 0.1%',
-            'Convergio': "Sí" if conv else "No",
-            'alpha_media': float(tr.posterior['alpha'].mean()),
-            'alpha_sd': float(tr.posterior['alpha'].std()),
-            'beta_year_media': float(tr.posterior['beta_year'].mean()),
-            'beta_year_sd': float(tr.posterior['beta_year'].std()),
-            'beta_area_media': float(tr.posterior['beta_area'].mean()),
-            'beta_area_sd': float(tr.posterior['beta_area'].std()),
-            'sigma_phi_media': float(tr.posterior['sigma_phi'].mean()),
-            'sigma_phi_sd': float(tr.posterior['sigma_phi'].std()),
-            'sigma_theta_media': float(tr.posterior['sigma_theta'].mean()),
-            'sigma_theta_sd': float(tr.posterior['sigma_theta'].std()),
-            'alpha_disp_media': float(tr.posterior['alpha_disp'].mean()),
-            'alpha_disp_sd': float(tr.posterior['alpha_disp'].std())
+            'Convergio': "Sí" if conv else "No"
         }
+        for p in ['alpha', 'beta_year', 'beta_area', 'sigma_phi', 'sigma_theta', 'alpha_disp']:
+            if p in tr.posterior:
+                record[f'{p}_media'] = float(tr.posterior[p].mean())
+                record[f'{p}_sd'] = float(tr.posterior[p].std())
         seed_records.append(record)
         
     df_stability = pd.DataFrame(seed_records)
@@ -323,17 +319,37 @@ def evaluate_seed_stability(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, 
     logger.info(f"ELBO medio entre semillas: {mean_row['ELBO_Final']} ± {sd_row['ELBO_Final']} | Convergencia: {mean_row['Convergio']}")
     return df_stability_full
 
-def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area_obs, sub_idx, homicidios_obs, trace_advi_c, trace_advi_d, seed=42):
+def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area_obs, sub_idx, homicidios_obs, trace_advi_b, trace_advi_c, trace_advi_d, seed=42):
     """
     Ajusta NUTS MCMC para:
-    1. Modelo (c) Binomial Negativa (ICAR + No Estructurado) [Modelo de referencia con mejor LOO].
-    2. Modelo (d) BYM2 Binomial Negativo [Modelo estructural comparativo].
+    1. Modelo (b) Binomial Negativa (ICAR) [Modelo de referencia ganador con mejor LOO-CV].
+    2. Modelo (c) Binomial Negativa (ICAR + No Estructurado) [Besag et al. 1991].
+    3. Modelo (d) BYM2 Binomial Negativo [Riebler et al. 2016].
     Compara medias, desviaciones estándar, intervalos HDI 95%, diferencia relativa de medias (ADVI vs NUTS),
     contención de la media NUTS en el HDI de ADVI, y correlación de Pearson y Spearman de los RR por subcircuito.
     """
-    logger.info("Iniciando VALIDACIÓN METODOLÓGICA CONTRA NUTS...")
+    logger.info("Iniciando VALIDACIÓN METODOLÓGICA CONTRA NUTS PARA MODELOS (b), (c) Y (d)...")
     
-    # ---------------- 1. NUTS PARA MODELO (C) (MEJOR LOO) ----------------
+    # ---------------- 1. NUTS PARA MODELO (B) (MEJOR LOO) ----------------
+    logger.info("Ajustando NUTS para Modelo (b): Binomial Negativa (ICAR) [Mejor LOO-CV]...")
+    model_nuts_b = build_model_b(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs)
+    t0_b = time.time()
+    with model_nuts_b:
+        trace_nuts_b = pm.sample(
+            draws=1000,
+            tune=1000,
+            chains=2,
+            cores=min(2, os.cpu_count() or 1),
+            target_accept=0.90,
+            random_seed=seed,
+            progressbar=False
+        )
+        pm.compute_log_likelihood(trace_nuts_b, model=model_nuts_b)
+    t_nuts_b = time.time() - t0_b
+    logger.info(f"✓ NUTS Modelo (b) completado en {t_nuts_b:.2f} s.")
+    az.to_netcdf(trace_nuts_b, os.path.join(config.MODELS_DIR, "trace_nb_icar_nuts.nc"))
+
+    # ---------------- 2. NUTS PARA MODELO (C) ----------------
     logger.info("Ajustando NUTS para Modelo (c): ICAR + No Estructurado (Besag et al. 1991)...")
     model_nuts_c = build_model_c(n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs)
     t0_c = time.time()
@@ -352,7 +368,7 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
     logger.info(f"✓ NUTS Modelo (c) completado en {t_nuts_c:.2f} s.")
     az.to_netcdf(trace_nuts_c, os.path.join(config.MODELS_DIR, "trace_nb_unstructured_nuts.nc"))
     
-    # ---------------- 2. NUTS PARA MODELO (D) (BYM2) ----------------
+    # ---------------- 3. NUTS PARA MODELO (D) (BYM2) ----------------
     logger.info("Ajustando NUTS para Modelo (d): BYM2 (Prior Beta(0.5, 0.5))...")
     model_nuts_d = build_model_d(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area_obs, sub_idx, homicidios_obs)
     t0_d = time.time()
@@ -371,9 +387,43 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
     logger.info(f"✓ NUTS Modelo (d) completado en {t_nuts_d:.2f} s.")
     az.to_netcdf(trace_nuts_d, os.path.join(config.MODELS_DIR, "trace_bym2_nuts.nc"))
 
-    # ---------------- 3. TABLA COMPARATIVA DE PARÁMETROS ADVI vs NUTS ----------------
+    # ---------------- 4. TABLA COMPARATIVA DE PARÁMETROS ADVI vs NUTS ----------------
     comp_records = []
     
+    # Parámetros Modelo (b)
+    params_b = [
+        ('alpha', 'Intercepto Cantonal (alpha)'),
+        ('beta_year', 'Contraste Anual 2025 vs 2024 (beta_year)'),
+        ('beta_area', 'Elasticidad Área Territorial (beta_area)'),
+        ('sigma_phi', 'Escala Espacial ICAR (sigma_phi)'),
+        ('alpha_disp', 'Dispersión Binomial Negativa (alpha_disp)')
+    ]
+    for p, label in params_b:
+        advi_vals = trace_advi_b.posterior[p].values.flatten()
+        nuts_vals = trace_nuts_b.posterior[p].values.flatten()
+        m_advi, sd_advi = float(np.mean(advi_vals)), float(np.std(advi_vals))
+        hdi_advi_low, hdi_advi_high = float(np.percentile(advi_vals, 2.5)), float(np.percentile(advi_vals, 97.5))
+        m_nuts, sd_nuts = float(np.mean(nuts_vals)), float(np.std(nuts_vals))
+        hdi_nuts_low, hdi_nuts_high = float(np.percentile(nuts_vals, 2.5)), float(np.percentile(nuts_vals, 97.5))
+        rel_diff_pct = ((m_advi - m_nuts) / (abs(m_nuts) + 1e-12)) * 100.0
+        ratio_sd = (sd_advi / sd_nuts) if sd_nuts > 0 else 1.0
+        pct_underest = ((1.0 - ratio_sd) * 100.0) if sd_nuts > 0 else 0.0
+        contains_nuts = "SÍ" if (hdi_advi_low <= m_nuts <= hdi_advi_high) else "NO"
+        comp_records.append({
+            'Modelo': 'Modelo (b) Binomial Negativa (ICAR) [Mejor LOO]',
+            'Parámetro': label,
+            'Media_ADVI': round(m_advi, 4),
+            'SD_ADVI': round(sd_advi, 4),
+            'HDI_95_ADVI': f"[{hdi_advi_low:.4f}, {hdi_advi_high:.4f}]",
+            'Media_NUTS': round(m_nuts, 4),
+            'SD_NUTS': round(sd_nuts, 4),
+            'HDI_95_NUTS': f"[{hdi_nuts_low:.4f}, {hdi_nuts_high:.4f}]",
+            'Diferencia_Relativa_Medias_Pct': round(rel_diff_pct, 2),
+            'Ratio_SD (ADVI/NUTS)': round(ratio_sd, 4),
+            'Subestimacion_Incertidumbre_Pct': f"{pct_underest:+.1f}%",
+            'HDI_ADVI_Contiene_Media_NUTS': contains_nuts
+        })
+        
     # Parámetros Modelo (c)
     params_c = [
         ('alpha', 'Intercepto Cantonal (alpha)'),
@@ -383,24 +433,19 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
         ('sigma_theta', 'Escala Efecto No Estructurado (sigma_theta)'),
         ('alpha_disp', 'Dispersión Binomial Negativa (alpha_disp)')
     ]
-    
     for p, label in params_c:
         advi_vals = trace_advi_c.posterior[p].values.flatten()
         nuts_vals = trace_nuts_c.posterior[p].values.flatten()
-        
         m_advi, sd_advi = float(np.mean(advi_vals)), float(np.std(advi_vals))
         hdi_advi_low, hdi_advi_high = float(np.percentile(advi_vals, 2.5)), float(np.percentile(advi_vals, 97.5))
-        
         m_nuts, sd_nuts = float(np.mean(nuts_vals)), float(np.std(nuts_vals))
         hdi_nuts_low, hdi_nuts_high = float(np.percentile(nuts_vals, 2.5)), float(np.percentile(nuts_vals, 97.5))
-        
         rel_diff_pct = ((m_advi - m_nuts) / (abs(m_nuts) + 1e-12)) * 100.0
         ratio_sd = (sd_advi / sd_nuts) if sd_nuts > 0 else 1.0
         pct_underest = ((1.0 - ratio_sd) * 100.0) if sd_nuts > 0 else 0.0
         contains_nuts = "SÍ" if (hdi_advi_low <= m_nuts <= hdi_advi_high) else "NO"
-        
         comp_records.append({
-            'Modelo': 'Modelo (c) Besag ICAR + No Estructurado (Mejor LOO)',
+            'Modelo': 'Modelo (c) Besag ICAR + No Estructurado',
             'Parámetro': label,
             'Media_ADVI': round(m_advi, 4),
             'SD_ADVI': round(sd_advi, 4),
@@ -423,22 +468,17 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
         ('rho', 'Parámetro de Mezcla Espacial Beta(0.5, 0.5) (rho)'),
         ('alpha_disp', 'Dispersión Binomial Negativa (alpha_disp)')
     ]
-    
     for p, label in params_d:
         advi_vals = trace_advi_d.posterior[p].values.flatten()
         nuts_vals = trace_nuts_d.posterior[p].values.flatten()
-        
         m_advi, sd_advi = float(np.mean(advi_vals)), float(np.std(advi_vals))
         hdi_advi_low, hdi_advi_high = float(np.percentile(advi_vals, 2.5)), float(np.percentile(advi_vals, 97.5))
-        
         m_nuts, sd_nuts = float(np.mean(nuts_vals)), float(np.std(nuts_vals))
         hdi_nuts_low, hdi_nuts_high = float(np.percentile(nuts_vals, 2.5)), float(np.percentile(nuts_vals, 97.5))
-        
         rel_diff_pct = ((m_advi - m_nuts) / (abs(m_nuts) + 1e-12)) * 100.0
         ratio_sd = (sd_advi / sd_nuts) if sd_nuts > 0 else 1.0
         pct_underest = ((1.0 - ratio_sd) * 100.0) if sd_nuts > 0 else 0.0
         contains_nuts = "SÍ" if (hdi_advi_low <= m_nuts <= hdi_advi_high) else "NO"
-        
         comp_records.append({
             'Modelo': 'Modelo (d) BYM2 (Prior Beta(0.5, 0.5))',
             'Parámetro': label,
@@ -459,16 +499,25 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
     df_comp_nuts.to_excel(excel_nuts_path, index=False)
     logger.info(f"Tabla de comparación ADVI vs NUTS guardada en: {excel_nuts_path}")
 
-    # ---------------- 4. CORRELACIÓN DE RIESGOS RELATIVOS (RR) ----------------
+    # ---------------- 5. CORRELACIÓN DE RIESGOS RELATIVOS (RR) ----------------
+    # Modelo (b)
+    phi_b_advi = trace_advi_b.posterior['phi'].values.reshape(-1, n_zonas)
+    exp_b_advi = np.exp(phi_b_advi)
+    rr_b_advi = np.median(exp_b_advi / np.mean(exp_b_advi, axis=1, keepdims=True), axis=0)
+    phi_b_nuts = trace_nuts_b.posterior['phi'].values.reshape(-1, n_zonas)
+    exp_b_nuts = np.exp(phi_b_nuts)
+    rr_b_nuts = np.median(exp_b_nuts / np.mean(exp_b_nuts, axis=1, keepdims=True), axis=0)
+    r_pearson_b, p_pearson_b = pearsonr(rr_b_advi, rr_b_nuts)
+    r_spearman_b, p_spearman_b = spearmanr(rr_b_advi, rr_b_nuts)
+    logger.info(f"Modelo (b) RR ADVI vs NUTS: Pearson r = {r_pearson_b:.4f} (p={p_pearson_b:.1e}) | Spearman rho = {r_spearman_b:.4f}")
+
     # Modelo (c)
     phi_c_advi = trace_advi_c.posterior['phi'].values.reshape(-1, n_zonas)
     exp_c_advi = np.exp(phi_c_advi)
     rr_c_advi = np.median(exp_c_advi / np.mean(exp_c_advi, axis=1, keepdims=True), axis=0)
-    
     phi_c_nuts = trace_nuts_c.posterior['phi'].values.reshape(-1, n_zonas)
     exp_c_nuts = np.exp(phi_c_nuts)
     rr_c_nuts = np.median(exp_c_nuts / np.mean(exp_c_nuts, axis=1, keepdims=True), axis=0)
-    
     r_pearson_c, p_pearson_c = pearsonr(rr_c_advi, rr_c_nuts)
     r_spearman_c, p_spearman_c = spearmanr(rr_c_advi, rr_c_nuts)
     logger.info(f"Modelo (c) RR ADVI vs NUTS: Pearson r = {r_pearson_c:.4f} (p={p_pearson_c:.1e}) | Spearman rho = {r_spearman_c:.4f}")
@@ -477,18 +526,24 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
     psi_d_advi = trace_advi_d.posterior['psi'].values.reshape(-1, n_zonas)
     exp_d_advi = np.exp(psi_d_advi)
     rr_d_advi = np.median(exp_d_advi / np.mean(exp_d_advi, axis=1, keepdims=True), axis=0)
-    
     psi_d_nuts = trace_nuts_d.posterior['psi'].values.reshape(-1, n_zonas)
     exp_d_nuts = np.exp(psi_d_nuts)
     rr_d_nuts = np.median(exp_d_nuts / np.mean(exp_d_nuts, axis=1, keepdims=True), axis=0)
-    
     r_pearson_d, p_pearson_d = pearsonr(rr_d_advi, rr_d_nuts)
     r_spearman_d, p_spearman_d = spearmanr(rr_d_advi, rr_d_nuts)
     logger.info(f"Modelo (d) RR ADVI vs NUTS: Pearson r = {r_pearson_d:.4f} (p={p_pearson_d:.1e}) | Spearman rho = {r_spearman_d:.4f}")
 
     df_correlaciones = pd.DataFrame([
         {
-            'Modelo': 'Modelo (c) Besag ICAR + No Estructurado (Mejor LOO)',
+            'Modelo': 'Modelo (b) Binomial Negativa (ICAR) [Mejor LOO]',
+            'Pearson_r': round(r_pearson_b, 4),
+            'Pearson_p_valor': f"{p_pearson_b:.2e}",
+            'Spearman_rho': round(r_spearman_b, 4),
+            'Spearman_p_valor': f"{p_spearman_b:.2e}",
+            'N_Subcircuitos': n_zonas
+        },
+        {
+            'Modelo': 'Modelo (c) Besag ICAR + No Estructurado',
             'Pearson_r': round(r_pearson_c, 4),
             'Pearson_p_valor': f"{p_pearson_c:.2e}",
             'Spearman_rho': round(r_spearman_c, 4),
@@ -508,40 +563,55 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
     df_correlaciones.to_excel(excel_corr_path, index=False)
     logger.info(f"Tabla de correlaciones RR guardada en: {excel_corr_path}")
 
-    # ---------------- 5. GRÁFICO DE DISPERSIÓN DE RR EN 2 PANELES ----------------
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), facecolor='white')
+    # ---------------- 6. GRÁFICO DE DISPERSIÓN DE RR EN 3 PANELES ----------------
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(19, 5.5), facecolor='white')
     
-    # Panel 1: Modelo (c)
+    # Panel 1: Modelo (b)
+    lim_b_min = min(rr_b_nuts.min(), rr_b_advi.min()) * 0.9
+    lim_b_max = max(rr_b_nuts.max(), rr_b_advi.max()) * 1.1
+    ax1.scatter(rr_b_nuts, rr_b_advi, color='#e65100', alpha=0.65, edgecolors='none', s=45, label='Subcircuitos (N=244)')
+    ax1.plot([lim_b_min, lim_b_max], [lim_b_min, lim_b_max], 'r--', linewidth=1.5, label='Identidad Perfecta ($y = x$)')
+    m_reg_b, b_reg_b = np.polyfit(rr_b_nuts, rr_b_advi, 1)
+    ax1.plot(np.array([lim_b_min, lim_b_max]), m_reg_b * np.array([lim_b_min, lim_b_max]) + b_reg_b, color='#3e2723', linewidth=1.5, linestyle=':', label=f'Regresión: $y = {m_reg_b:.2f}x {b_reg_b:+.2f}$')
+    ax1.set_xlim(lim_b_min, lim_b_max)
+    ax1.set_ylim(lim_b_min, lim_b_max)
+    ax1.set_xlabel('Riesgo Relativo Mediano - NUTS (MCMC)', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax1.set_ylabel('Riesgo Relativo Mediano - ADVI', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax1.set_title(f'(A) Modelo (b) NegBin (ICAR) [Mejor LOO]\nPearson $r = {r_pearson_b:.4f}$ | Spearman $\\rho = {r_spearman_b:.4f}$', fontsize=10.5, fontweight='bold', pad=10)
+    ax1.grid(color='#eeeeee', linestyle='-', linewidth=0.5)
+    ax1.legend(loc='upper left', fontsize=9, frameon=True, edgecolor='#cccccc')
+
+    # Panel 2: Modelo (c)
     lim_c_min = min(rr_c_nuts.min(), rr_c_advi.min()) * 0.9
     lim_c_max = max(rr_c_nuts.max(), rr_c_advi.max()) * 1.1
-    ax1.scatter(rr_c_nuts, rr_c_advi, color='#1565c0', alpha=0.65, edgecolors='none', s=45, label='Subcircuitos (N=244)')
-    ax1.plot([lim_c_min, lim_c_max], [lim_c_min, lim_c_max], 'r--', linewidth=1.5, label='Identidad Perfecta ($y = x$)')
+    ax2.scatter(rr_c_nuts, rr_c_advi, color='#1565c0', alpha=0.65, edgecolors='none', s=45, label='Subcircuitos (N=244)')
+    ax2.plot([lim_c_min, lim_c_max], [lim_c_min, lim_c_max], 'r--', linewidth=1.5, label='Identidad Perfecta ($y = x$)')
     m_reg_c, b_reg_c = np.polyfit(rr_c_nuts, rr_c_advi, 1)
-    ax1.plot(np.array([lim_c_min, lim_c_max]), m_reg_c * np.array([lim_c_min, lim_c_max]) + b_reg_c, color='#004d40', linewidth=1.5, linestyle=':', label=f'Regresión: $y = {m_reg_c:.2f}x {b_reg_c:+.2f}$')
-    ax1.set_xlim(lim_c_min, lim_c_max)
-    ax1.set_ylim(lim_c_min, lim_c_max)
-    ax1.set_xlabel('Riesgo Relativo Mediano - NUTS (MCMC Exacto)', fontsize=11, fontweight='bold', labelpad=8)
-    ax1.set_ylabel('Riesgo Relativo Mediano - ADVI (Inferencia Variacional)', fontsize=11, fontweight='bold', labelpad=8)
-    ax1.set_title(f'(A) Modelo (c) Besag ICAR + No Estructurado (Mejor LOO)\nPearson $r = {r_pearson_c:.4f}$ | Spearman $\\rho = {r_spearman_c:.4f}$', fontsize=11, fontweight='bold', pad=10)
-    ax1.grid(color='#eeeeee', linestyle='-', linewidth=0.5)
-    ax1.legend(loc='upper left', fontsize=9.5, frameon=True, edgecolor='#cccccc')
+    ax2.plot(np.array([lim_c_min, lim_c_max]), m_reg_c * np.array([lim_c_min, lim_c_max]) + b_reg_c, color='#004d40', linewidth=1.5, linestyle=':', label=f'Regresión: $y = {m_reg_c:.2f}x {b_reg_c:+.2f}$')
+    ax2.set_xlim(lim_c_min, lim_c_max)
+    ax2.set_ylim(lim_c_min, lim_c_max)
+    ax2.set_xlabel('Riesgo Relativo Mediano - NUTS (MCMC)', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax2.set_ylabel('Riesgo Relativo Mediano - ADVI', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax2.set_title(f'(B) Modelo (c) Besag ICAR + $\\theta$\nPearson $r = {r_pearson_c:.4f}$ | Spearman $\\rho = {r_spearman_c:.4f}$', fontsize=10.5, fontweight='bold', pad=10)
+    ax2.grid(color='#eeeeee', linestyle='-', linewidth=0.5)
+    ax2.legend(loc='upper left', fontsize=9, frameon=True, edgecolor='#cccccc')
     
-    # Panel 2: Modelo (d)
+    # Panel 3: Modelo (d)
     lim_d_min = min(rr_d_nuts.min(), rr_d_advi.min()) * 0.9
     lim_d_max = max(rr_d_nuts.max(), rr_d_advi.max()) * 1.1
-    ax2.scatter(rr_d_nuts, rr_d_advi, color='#2e7d32', alpha=0.65, edgecolors='none', s=45, label='Subcircuitos (N=244)')
-    ax2.plot([lim_d_min, lim_d_max], [lim_d_min, lim_d_max], 'r--', linewidth=1.5, label='Identidad Perfecta ($y = x$)')
+    ax3.scatter(rr_d_nuts, rr_d_advi, color='#2e7d32', alpha=0.65, edgecolors='none', s=45, label='Subcircuitos (N=244)')
+    ax3.plot([lim_d_min, lim_d_max], [lim_d_min, lim_d_max], 'r--', linewidth=1.5, label='Identidad Perfecta ($y = x$)')
     m_reg_d, b_reg_d = np.polyfit(rr_d_nuts, rr_d_advi, 1)
-    ax2.plot(np.array([lim_d_min, lim_d_max]), m_reg_d * np.array([lim_d_min, lim_d_max]) + b_reg_d, color='#bf360c', linewidth=1.5, linestyle=':', label=f'Regresión: $y = {m_reg_d:.2f}x {b_reg_d:+.2f}$')
-    ax2.set_xlim(lim_d_min, lim_d_max)
-    ax2.set_ylim(lim_d_min, lim_d_max)
-    ax2.set_xlabel('Riesgo Relativo Mediano - NUTS (MCMC Exacto)', fontsize=11, fontweight='bold', labelpad=8)
-    ax2.set_ylabel('Riesgo Relativo Mediano - ADVI (Inferencia Variacional)', fontsize=11, fontweight='bold', labelpad=8)
-    ax2.set_title(f'(B) Modelo (d) BYM2 (Prior Beta(0.5, 0.5))\nPearson $r = {r_pearson_d:.4f}$ | Spearman $\\rho = {r_spearman_d:.4f}$', fontsize=11, fontweight='bold', pad=10)
-    ax2.grid(color='#eeeeee', linestyle='-', linewidth=0.5)
-    ax2.legend(loc='upper left', fontsize=9.5, frameon=True, edgecolor='#cccccc')
+    ax3.plot(np.array([lim_d_min, lim_d_max]), m_reg_d * np.array([lim_d_min, lim_d_max]) + b_reg_d, color='#bf360c', linewidth=1.5, linestyle=':', label=f'Regresión: $y = {m_reg_d:.2f}x {b_reg_d:+.2f}$')
+    ax3.set_xlim(lim_d_min, lim_d_max)
+    ax3.set_ylim(lim_d_min, lim_d_max)
+    ax3.set_xlabel('Riesgo Relativo Mediano - NUTS (MCMC)', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax3.set_ylabel('Riesgo Relativo Mediano - ADVI', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax3.set_title(f'(C) Modelo (d) BYM2 Beta(0.5, 0.5)\nPearson $r = {r_pearson_d:.4f}$ | Spearman $\\rho = {r_spearman_d:.4f}$', fontsize=10.5, fontweight='bold', pad=10)
+    ax3.grid(color='#eeeeee', linestyle='-', linewidth=0.5)
+    ax3.legend(loc='upper left', fontsize=9, frameon=True, edgecolor='#cccccc')
 
-    for ax in [ax1, ax2]:
+    for ax in [ax1, ax2, ax3]:
         for spine in ['top', 'right']:
             ax.spines[spine].set_visible(False)
         for spine in ['left', 'bottom']:
@@ -554,9 +624,9 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
     plt.savefig(png_scatter, dpi=300, bbox_inches='tight')
     plt.savefig(pdf_scatter, format='pdf', bbox_inches='tight')
     plt.close()
-    logger.info(f"Gráfico de dispersión ADVI vs NUTS guardado en: {png_scatter}")
+    logger.info(f"Gráfico de dispersión ADVI vs NUTS (3 paneles) guardado en: {png_scatter}")
 
-    return df_comp_nuts, df_correlaciones, trace_nuts_c, trace_nuts_d
+    return df_comp_nuts, df_correlaciones, trace_nuts_b, trace_nuts_c, trace_nuts_d
 
 def plot_elbo_convergence(elbo_dict: dict):
     """
@@ -767,24 +837,6 @@ def run_stage8(gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame, w_selec
     plot_elbo_convergence(elbo_trajectories)
 
     # -------------------------------------------------------------
-    # EVALUACIÓN DE ESTABILIDAD CON 3 SEMILLAS (MODELO DE REFERENCIA BESAG)
-    # -------------------------------------------------------------
-    seed_42_tuple = (approx_c, trace_c, elbo_c, elbo_f_c, n_act_c, conv_c, rel_5k_c)
-    df_stability = evaluate_seed_stability(
-        n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs,
-        seeds=[42, 123, 999], n_iter=n_advi_iter, lr=advi_lr, tol_rel_5k=advi_tol_5k,
-        seed_42_result=seed_42_tuple
-    )
-
-    # -------------------------------------------------------------
-    # VALIDACIÓN METODOLÓGICA CONTRA NUTS (MODELOS C Y D)
-    # -------------------------------------------------------------
-    df_comp_nuts, df_correlaciones, trace_nuts_c, trace_nuts_d = run_nuts_validation(
-        n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area_obs, sub_idx, homicidios_obs,
-        trace_advi_c=trace_c, trace_advi_d=trace_d, seed=seed
-    )
-
-    # -------------------------------------------------------------
     # COMPARACIÓN FORMAL DE MODELOS CON LOO-CV Y WAIC (ESCALA LOG)
     # -------------------------------------------------------------
     logger.info("Ejecutando comparación formal de modelos mediante ArviZ LOO-CV (escala log ELPD)...")
@@ -836,30 +888,54 @@ def run_stage8(gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame, w_selec
     excel_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_modelos_bayesiana.xlsx")
     df_compare_export.to_excel(excel_comp_path, index=False)
     logger.info(f"Tabla de comparación formal guardada en: {excel_comp_path}")
-    
-    # EVALUACIÓN DE SIGNIFICANCIA ENTRE (C) Y (D)
-    if 'Binomial Negativa (ICAR + No Estructurado)' in df_compare_loo.index and 'BYM2 Binomial Negativo (Prior Beta(0.5, 0.5))' in df_compare_loo.index:
-        c_elpd = df_compare_loo.loc['Binomial Negativa (ICAR + No Estructurado)', 'elpd_loo']
-        d_elpd = df_compare_loo.loc['BYM2 Binomial Negativo (Prior Beta(0.5, 0.5))', 'elpd_loo']
-        diff_cd = abs(c_elpd - d_elpd)
-        dse_val = df_compare_loo.loc['Binomial Negativa (ICAR + No Estructurado)', 'dse']
-        logger.info("==================================================================================")
-        logger.info(f"EVALUACIÓN COMPARATIVA MODELO (c) vs MODELO (d):")
-        logger.info(f"Diferencia de ELPD_LOO: {diff_cd:.4f} puntos | Error estándar de la diferencia (dse): {dse_val:.4f}")
-        if diff_cd < 2.0 * dse_val:
-            logger.info("DICTAMEN METODOLÓGICO: La diferencia entre el modelo (c) (ICAR + No Estructurado) y el")
-            logger.info("modelo (d) (BYM2) es menor a 2 errores estándar (diff < 2*dse).")
-            logger.info("Por tanto, NO ES ESTADÍSTICAMENTE SIGNIFICATIVA y AMBOS MODELOS EMPATAN.")
-            logger.info("No se puede afirmar que BYM2 supere a (c); ambos presentan un ajuste predictivo equivalente.")
-        logger.info("==================================================================================")
 
     # -------------------------------------------------------------
     # SELECCIÓN METODOLÓGICA DEL MODELO DE REFERENCIA (MEJOR LOO)
     # -------------------------------------------------------------
-    best_model_name = df_compare_loo.index[0]  # Modelo ganador por LOO-CV (Modelo c)
+    best_model_name = df_compare_loo.index[0]  # Modelo ganador por LOO-CV (Modelo b)
     best_model = models[best_model_name]
     best_trace = traces[best_model_name]
     logger.info(f"Modelo seleccionado como referencia por mejor LOO-CV para inferencia downstream: '{best_model_name}'.")
+
+    # EVALUACIÓN DE SIGNIFICANCIA ENTRE (B) Y (C)
+    if 'Binomial Negativa (ICAR)' in df_compare_loo.index and 'Binomial Negativa (ICAR + No Estructurado)' in df_compare_loo.index:
+        b_elpd = df_compare_loo.loc['Binomial Negativa (ICAR)', 'elpd_loo']
+        c_elpd = df_compare_loo.loc['Binomial Negativa (ICAR + No Estructurado)', 'elpd_loo']
+        diff_bc = abs(b_elpd - c_elpd)
+        dse_bc = df_compare_loo.loc['Binomial Negativa (ICAR + No Estructurado)', 'dse']
+        logger.info("==================================================================================")
+        logger.info(f"EVALUACIÓN COMPARATIVA MODELO (b) vs MODELO (c):")
+        logger.info(f"Diferencia de ELPD_LOO: {diff_bc:.4f} puntos | Error estándar de la diferencia (dse): {dse_bc:.4f}")
+        if diff_bc < 2.0 * dse_bc:
+            logger.info("DICTAMEN METODOLÓGICO: La diferencia entre el modelo (b) (ICAR) y el")
+            logger.info(f"modelo (c) (ICAR + No Estructurado) es menor a 2 errores estándar (diff = {diff_bc:.2f} < 2*dse = {2*dse_bc:.2f}).")
+            logger.info("En la práctica ambos modelos empatan predictivamente.")
+            logger.info("Por el principio de parsimonia (menos parámetros) y mejor comportamiento diagnóstico de Pareto-k, gana el Modelo (b).")
+        logger.info("==================================================================================")
+
+    # -------------------------------------------------------------
+    # EVALUACIÓN DE ESTABILIDAD CON 3 SEMILLAS (MODELO DE REFERENCIA GANADOR)
+    # -------------------------------------------------------------
+    if best_model_name == 'Binomial Negativa (ICAR)':
+        seed_42_tuple = (approx_b, trace_b, elbo_b, elbo_f_b, n_act_b, conv_b, rel_5k_b)
+        stab_type = "b"
+    else:
+        seed_42_tuple = (approx_c, trace_c, elbo_c, elbo_f_c, n_act_c, conv_c, rel_5k_c)
+        stab_type = "c"
+        
+    df_stability = evaluate_seed_stability(
+        n_zonas, W_bin, is_2025_obs, log_area_obs, sub_idx, homicidios_obs,
+        seeds=[42, 123, 999], n_iter=n_advi_iter, lr=advi_lr, tol_rel_5k=advi_tol_5k,
+        seed_42_result=seed_42_tuple, model_type=stab_type
+    )
+
+    # -------------------------------------------------------------
+    # VALIDACIÓN METODOLÓGICA CONTRA NUTS (MODELOS B, C Y D)
+    # -------------------------------------------------------------
+    df_comp_nuts, df_correlaciones, trace_nuts_b, trace_nuts_c, trace_nuts_d = run_nuts_validation(
+        n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area_obs, sub_idx, homicidios_obs,
+        trace_advi_b=trace_b, trace_advi_c=trace_c, trace_advi_d=trace_d, seed=seed
+    )
     
     # Generar contraste anual
     generate_temporal_outputs(best_trace)
@@ -875,4 +951,4 @@ def run_stage8(gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame, w_selec
     logger.info(f"Traza principal guardada en: {main_trace_path}")
     
     logger.info("ETAPA 8: Modelos Bayesianos con ADVI y validación NUTS finalizados con éxito.")
-    return best_model, best_trace, df_compare_export, traces
+    return best_model, best_trace, df_compare_export, traces, trace_nuts_b

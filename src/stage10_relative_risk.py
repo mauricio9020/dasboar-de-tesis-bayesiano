@@ -8,21 +8,22 @@ from src import config
 
 logger = logging.getLogger("Pipeline.Stage10")
 
-def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame, trace_nuts=None) -> gpd.GeoDataFrame:
     """
     Etapa 10: Estimación de Riesgo Relativo (RR)
-    - Extrae muestras posteriores de los coeficientes de efectos espaciales.
+    - Extrae muestras posteriores de los coeficientes de efectos espaciales bajo ADVI.
     - Calcula el RR mediano posterior y sus intervalos de credibilidad (HDI 95%).
-    - Calcula la probabilidad posterior de excedencia P(RR > 1.5).
+    - Calcula la probabilidad posterior de excedencia P(RR > 1.5) bajo ADVI.
+    - Si se proporciona trace_nuts, calcula de forma análoga las probabilidades de excedencia P(RR > 1.5)
+      y el RR mediano bajo NUTS para contrastar la subestimación de incertidumbre de ADVI.
     - Genera mapas estáticos suavizados de riesgo (Figura 20) y los exporta a 300 dpi.
     - Guarda los resultados tabulares en un CSV y Excel.
     """
     logger.info("Iniciando ETAPA 10: Estimación de Riesgo Relativo y Mapas")
     
-    # 1. Extraer muestras de la posterior del efecto espacial
-    # Identificar la variable espacial del modelo (phi, psi en BYM2, o spatial_total)
+    # 1. Extraer muestras de la posterior del efecto espacial (ADVI)
     spatial_var = 'phi' if 'phi' in trace.posterior else ('psi' if 'psi' in trace.posterior else 'spatial_total')
-    logger.info(f"Extrayendo efecto espacial posterior desde la variable: '{spatial_var}'")
+    logger.info(f"Extrayendo efecto espacial posterior ADVI desde la variable: '{spatial_var}'")
     
     phi_samples = trace.posterior[spatial_var].values.reshape(-1, trace.posterior[spatial_var].shape[-1])  # shape (n_samples, n_zonas)
     n_samples, n_zonas = phi_samples.shape
@@ -32,45 +33,61 @@ def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame)
     # compara el riesgo del subcircuito i frente a la referencia basal promedio cantonal (RR = 1.0).
     # Se calcula muestra a muestra estandarizando por la media espacial de los efectos exponenciales:
     # RR_i^(s) = exp(phi_i^(s)) / [ (1/N) * sum_k exp(phi_k^(s)) ]
-    # De este modo, un subcircuito con RR = 1.0 representa riesgo idéntico a la media cantonal,
-    # RR = 1.5 representa un 50% más de riesgo que el promedio cantonal, y P(RR > 1.5) mide la
-    # probabilidad posterior de riesgo crítico sobre la referencia cantonal estandarizada.
     
     exp_phi = np.exp(phi_samples)  # (n_samples, n_zonas)
     spatial_mean = np.mean(exp_phi, axis=1, keepdims=True)  # (n_samples, 1)
     rr_samples = exp_phi / spatial_mean  # (n_samples, n_zonas)
     
-    logger.info(f"Riesgo Relativo calculado para {n_zonas} subcircuitos sobre {n_samples} muestras posteriores.")
+    logger.info(f"Riesgo Relativo ADVI calculado para {n_zonas} subcircuitos sobre {n_samples} muestras posteriores.")
     logger.info(f"Media global de RR_samples verificada: {np.mean(rr_samples):.4f} (referencia cantonal = 1.0000).")
         
-    # Extraer estimaciones posteriores puntuales y de incertidumbre
+    # Extraer estimaciones posteriores puntuales y de incertidumbre ADVI
     rr_median = np.median(rr_samples, axis=0)
     rr_mean = np.mean(rr_samples, axis=0)
     rr_lower = np.percentile(rr_samples, 2.5, axis=0)
     rr_upper = np.percentile(rr_samples, 97.5, axis=0)
     
-    # Probabilidad posterior de excedencia de riesgo crítico P(RR > 1.5)
+    # Probabilidad posterior de excedencia ADVI
     exceedance_threshold = 1.5
     prob_exceedance = np.mean(rr_samples > exceedance_threshold, axis=0)
     prob_exceedance_1 = np.mean(rr_samples > 1.0, axis=0)
     prob_safe = np.mean(rr_samples < 1.0, axis=0)
     
     # 3. Mapear resultados a los subcircuitos
-    # Obtenemos los códigos ordenados
     sub_codes = sorted(gdf_total['cod_subcircu'].unique())
     
-    df_rr = pd.DataFrame({
+    df_rr_data = {
         'cod_subcircu': sub_codes,
         'rr_estimado_mediana': rr_median,
         'rr_estimado_media': rr_mean,
         'rr_limite_inf_95': rr_lower,
         'rr_limite_sup_95': rr_upper,
         'probabilidad_excedencia': prob_exceedance,
-        'prob_exced_1': prob_exceedance_1,
+        'prob_exced_1_5_advi': prob_exceedance,
+        'prob_exced_1_0_advi': prob_exceedance_1,
         'prob_segura': prob_safe
-    })
+    }
     
-    # 4. Clasificación de Riesgo Relativo por Quintiles
+    # 4. Cálculo de Probabilidades de Excedencia e Incertidumbre bajo NUTS
+    if trace_nuts is not None:
+        spatial_var_nuts = 'phi' if 'phi' in trace_nuts.posterior else ('psi' if 'psi' in trace_nuts.posterior else 'spatial_total')
+        logger.info(f"Calculando probabilidades de excedencia NUTS para el modelo final desde: '{spatial_var_nuts}'...")
+        phi_nuts = trace_nuts.posterior[spatial_var_nuts].values.reshape(-1, trace_nuts.posterior[spatial_var_nuts].shape[-1])
+        exp_phi_nuts = np.exp(phi_nuts)
+        spatial_mean_nuts = np.mean(exp_phi_nuts, axis=1, keepdims=True)
+        rr_samples_nuts = exp_phi_nuts / spatial_mean_nuts
+        
+        df_rr_data['rr_mediana_nuts'] = np.median(rr_samples_nuts, axis=0)
+        df_rr_data['rr_media_nuts'] = np.mean(rr_samples_nuts, axis=0)
+        df_rr_data['rr_limite_inf_95_nuts'] = np.percentile(rr_samples_nuts, 2.5, axis=0)
+        df_rr_data['rr_limite_sup_95_nuts'] = np.percentile(rr_samples_nuts, 97.5, axis=0)
+        df_rr_data['prob_exced_1_5_nuts'] = np.mean(rr_samples_nuts > 1.5, axis=0)
+        df_rr_data['prob_exced_1_0_nuts'] = np.mean(rr_samples_nuts > 1.0, axis=0)
+        logger.info(f"[OK] Probabilidades NUTS calculadas exitosamente. P(RR > 1.5) promedio NUTS: {np.mean(df_rr_data['prob_exced_1_5_nuts']):.4f} vs ADVI: {np.mean(prob_exceedance):.4f}")
+        
+    df_rr = pd.DataFrame(df_rr_data)
+    
+    # Clasificación de Riesgo Relativo por Quintiles
     q = df_rr['rr_estimado_mediana'].quantile([0.2, 0.4, 0.6, 0.8]).values
     labels = [
         f'Muy Bajo (RR ≤ {q[0]:.2f})',
@@ -93,14 +110,19 @@ def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame)
     df_rr_names = df_names.merge(df_rr, on='cod_subcircu', how='right').sort_values(by='rr_estimado_mediana', ascending=False)
     
     df_rr_names.to_csv(csv_path, index=False)
-    # Top 20 subcircuitos más calientes para la tesis
-    df_top_rr = gdf_rr[['cod_subcircu', 'subcircuito_nom', 'circuito_nom', 'distrito_nom', 'homicidios_totales', 'rr_estimado_mediana', 'probabilidad_excedencia']].sort_values(by='rr_estimado_mediana', ascending=False)
+    
+    # Top 20 subcircuitos más calientes para la tesis con columnas comparativas NUTS
+    top_cols = ['cod_subcircu', 'subcircuito_nom', 'circuito_nom', 'distrito_nom', 'homicidios_totales', 
+                'rr_estimado_mediana', 'probabilidad_excedencia']
+    if 'prob_exced_1_5_nuts' in df_rr_names.columns:
+        top_cols.extend(['rr_mediana_nuts', 'prob_exced_1_5_nuts'])
+    df_top_rr = df_rr_names[top_cols].sort_values(by='rr_estimado_mediana', ascending=False)
     
     with pd.ExcelWriter(excel_path) as writer:
         df_rr_names.to_excel(writer, sheet_name="Riesgos Relativos", index=False)
         df_top_rr.head(20).to_excel(writer, sheet_name="Top 20 Criticos", index=False)
         
-    logger.info(f"Tablas de riesgo guardadas en CSV y Excel con nombres descriptivos de subcircuitos.")
+    logger.info(f"Tablas de riesgo guardadas en CSV y Excel con columnas comparativas de NUTS.")
     
     # Guardar GeoJSON final con todos los datos integrados para Leaflet
     geojson_path = os.path.join(config.CLEAN_DATA_DIR, "subcircuitos_riesgo_completo.geojson")
@@ -152,7 +174,7 @@ def run_stage10(trace, gdf_total: gpd.GeoDataFrame, gdf_anual: gpd.GeoDataFrame)
     gdf_rr.plot(column='probabilidad_excedencia', cmap='YlOrRd', legend=True,
                 legend_kwds={'label': 'P(RR > 1.5)'}, ax=ax2,
                 edgecolor='#666666', linewidth=0.2)
-    ax2.set_title("B: Probabilidad Posterior de Excedencia $P(RR > 1.5 \,|\, \\text{Datos})$", fontsize=12, fontweight='bold')
+    ax2.set_title(r"B: Probabilidad Posterior de Excedencia $P(RR > 1.5 \,|\, \text{Datos})$", fontsize=12, fontweight='bold')
     ax2.axis('off')
     
     plt.suptitle("Figura 20: Cartografía Bayesiana Suavizada de Riesgo de Homicidios", fontsize=14, fontweight='bold', y=0.98)

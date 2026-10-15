@@ -6,6 +6,12 @@ import time
 # Agregar directorio actual al path para importar correctamente
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Configurar encoding UTF-8 en stdout/stderr para evitar fallos con caracteres en terminales Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 # Configurar backend no interactivo para evitar fallos de Tkinter/hilos en Windows
 import matplotlib
 matplotlib.use('Agg')
@@ -69,14 +75,15 @@ def main():
         poisson_res, nb_res, df_compare = run_stage7(gdf_anual)
         
         # Etapa 8: Ajuste y Comparación de los 4 Modelos Bayesianos mediante ADVI (PyMC) y Validación NUTS
-        # Ajuste completo y real de los 4 modelos con ADVI (n=40000, tol=1e-4), 3 semillas, y validación NUTS
-        bayesian_model, trace, df_comp_bayes, traces_dict = run_stage8(gdf_total, gdf_anual, w_selected)
+        # Ajuste completo y real de los 4 modelos con ADVI (n=50000, lr=0.005, tol=0.1%), 3 semillas, y validación NUTS (b, c, d)
+        bayesian_model, trace, df_comp_bayes, traces_dict, trace_nuts_b = run_stage8(gdf_total, gdf_anual, w_selected)
         
-        # Etapa 9: Diagnósticos Bayesianos y PPC
-        metrics_info = run_stage9(trace, traces_dict=traces_dict)
+        # Etapa 9: Diagnósticos Bayesianos y PPC (recibe el modelo ganador de df_comp_bayes)
+        best_name = df_comp_bayes.iloc[0]['Modelo']
+        metrics_info = run_stage9(trace, traces_dict=traces_dict, model_name=best_name)
         
-        # Etapa 10: Estimación de Riesgos Relativos y Cartografía
-        gdf_rr = run_stage10(trace, gdf_total, gdf_anual)
+        # Etapa 10: Estimación de Riesgos Relativos y Cartografía (incluye NUTS para calibración)
+        gdf_rr = run_stage10(trace, gdf_total, gdf_anual, trace_nuts=trace_nuts_b)
         
         # Etapa 11: Análisis Dinámico de Hotspots Espacio-Temporal
         df_evol = run_stage11(trace, gdf_anual)

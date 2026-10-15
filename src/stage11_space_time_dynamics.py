@@ -86,13 +86,34 @@ def run_stage11(trace, gdf_anual: gpd.GeoDataFrame) -> pd.DataFrame:
     df_emergent = df_evol[df_evol['clasificacion_dinamica'] == 'HOTSPOT EMERGENTE'].sort_values(by=col_last, ascending=False)
     df_declining = df_evol[df_evol['clasificacion_dinamica'] == 'HOTSPOT EN DECLIVE'].sort_values(by=col_2024, ascending=False)
     
+    # Nota metodológica sobre la ausencia de interacción espacio-temporal
+    df_nota_limitacion = pd.DataFrame([
+        {
+            'Aspecto_Metodologico': 'Estructura del Modelo Espacio-Temporal',
+            'Detalle': 'El modelo bayesiano espacio-temporal implementado posee una formulación aditiva: log(mu_{it}) = alpha + beta_year * I(t=2025) + beta_area * log(Area_i) + phi_i.'
+        },
+        {
+            'Aspecto_Metodologico': 'Ausencia de Interacción Espacio-Temporal (delta_{it})',
+            'Detalle': 'El modelo no incluye un término de interacción espacio-temporal delta_{it} (Knorr-Held, 2000). Por consiguiente, el riesgo relativo espacial de cada subcircuito relativo a la media cantonal es constante en el tiempo: RR_{i, 2024} = RR_{i, 2025} (ej. Guasmo 1 tiene 4.077 en ambos años).'
+        },
+        {
+            'Aspecto_Metodologico': 'Implicación sobre la Clasificación Dinámica',
+            'Detalle': 'Dado que RR_{i, 2024} == RR_{i, 2025}, todo subcircuito con RR >= 1.2 es catalogado como "HOTSPOT PERSISTENTE" y no existen subcircuitos emergentes o en declive. La clasificación dinámica no aporta información temporal diferencial y debe interpretarse como una partición estática del riesgo.'
+        },
+        {
+            'Aspecto_Metodologico': 'Declaración Formal en la Tesis',
+            'Detalle': 'Esta propiedad se documenta explícitamente en la tesis como una limitación metodológica del modelo aditivo y se recomienda la incorporación de términos de interacción Knorr-Held tipo I-IV en trabajos futuros.'
+        }
+    ])
+    
     with pd.ExcelWriter(excel_path) as writer:
         df_evol.to_excel(writer, sheet_name="Evolucion Completa", index=False)
         df_persistent.to_excel(writer, sheet_name="Hotspots Persistentes", index=False)
         df_emergent.to_excel(writer, sheet_name="Hotspots Emergentes", index=False)
         df_declining.to_excel(writer, sheet_name="Hotspots en Declive", index=False)
+        df_nota_limitacion.to_excel(writer, sheet_name="Nota_Metodologica_Limitacion", index=False)
         
-    logger.info("Tablas de dinámica espacio-temporal exportadas con éxito.")
+    logger.info("Tablas de dinámica espacio-temporal exportadas con éxito, incluyendo nota metodológica de limitación.")
     
     # 4. Gráfico 21: Evolución del Riesgo Relativo (Líneas para Top Zonas Críticas)
     plt.figure(figsize=(10, 6))
