@@ -122,12 +122,26 @@ def run_stage9(trace, traces_dict: dict = None, model_name: str = None) -> dict:
         {"Diagnóstico": "Advertencia Pareto-k", "Valor": pareto_warning}
     ]
     
+    # Cargar valores empíricos de rho desde tabla_comparacion_advi_nuts.xlsx si existen
+    rho_advi_val = 0.9998
+    rho_nuts_val = 0.8199
+    excel_nuts_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
+    if os.path.exists(excel_nuts_path):
+        try:
+            df_nuts_temp = pd.read_excel(excel_nuts_path)
+            row_rho = df_nuts_temp[df_nuts_temp.iloc[:, 1].str.contains('rho', case=False, na=False)]
+            if not row_rho.empty:
+                rho_advi_val = float(row_rho['Media_ADVI'].values[0])
+                rho_nuts_val = float(row_rho['Media_NUTS'].values[0])
+        except Exception as e:
+            logger.warning(f"No se pudo leer rho de {excel_nuts_path}: {e}")
+
     if rho_stats:
         conv_rows.extend([
             {"Diagnóstico": "Rho Media Posterior (ADVI)", "Valor": rho_stats['rho_media']},
             {"Diagnóstico": "Rho HDI 95% Inferior", "Valor": rho_stats['rho_hdi_2.5']},
             {"Diagnóstico": "Rho HDI 95% Superior", "Valor": rho_stats['rho_hdi_97.5']},
-            {"Diagnóstico": "Aviso Interpretativo Rho", "Valor": "No fiable bajo ADVI (0.027 vs 0.813 en NUTS)"}
+            {"Diagnóstico": "Aviso Interpretativo Rho", "Valor": f"No fiable bajo ADVI ({rho_advi_val:.4f} vs {rho_nuts_val:.4f} en NUTS)"}
         ])
         
     if year_stats:
@@ -140,7 +154,6 @@ def run_stage9(trace, traces_dict: dict = None, model_name: str = None) -> dict:
     df_conv = pd.DataFrame(conv_rows)
     
     # Cargar tablas auxiliares si existen para integrarlas en el archivo Excel consolidado
-    excel_nuts_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
     df_comp_nuts = pd.read_excel(excel_nuts_path) if os.path.exists(excel_nuts_path) else None
     
     excel_corr_path = os.path.join(config.TABLES_DIR, "tabla_correlacion_rr_advi_nuts.xlsx")

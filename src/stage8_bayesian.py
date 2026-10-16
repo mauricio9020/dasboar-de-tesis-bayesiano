@@ -563,6 +563,37 @@ def run_nuts_validation(n_zonas, W_bin, scale_factor_bym2, is_2025_obs, log_area
     df_correlaciones.to_excel(excel_corr_path, index=False)
     logger.info(f"Tabla de correlaciones RR guardada en: {excel_corr_path}")
 
+    # ---------------- 5b. TABLA DE DIAGNÓSTICOS NUTS (R-hat, ESS y Divergencias) ----------------
+    nuts_diag_records = []
+    nuts_models = [
+        ('Modelo (b) Binomial Negativa (ICAR)', trace_nuts_b),
+        ('Modelo (c) Besag ICAR + No Estructurado', trace_nuts_c),
+        ('Modelo (d) BYM2 (Prior Beta(0.5, 0.5))', trace_nuts_d)
+    ]
+    for m_name, tr in nuts_models:
+        rhat_ds = az.rhat(tr)
+        rhat_max = float(max([float(np.nanmax(v.values)) for v in rhat_ds.values()]))
+        
+        ess_b_ds = az.ess(tr, method='bulk')
+        ess_b_min = float(min([float(np.nanmin(v.values)) for v in ess_b_ds.values()]))
+        
+        ess_t_ds = az.ess(tr, method='tail')
+        ess_t_min = float(min([float(np.nanmin(v.values)) for v in ess_t_ds.values()]))
+        
+        divs = int(np.sum(tr.sample_stats['diverging'].values)) if 'diverging' in tr.sample_stats else 0
+        
+        nuts_diag_records.append({
+            'Modelo': m_name,
+            'R_hat_Maximo': round(rhat_max, 4),
+            'ESS_Bulk_Minimo': round(ess_b_min, 2),
+            'ESS_Tail_Minimo': round(ess_t_min, 2),
+            'Numero_Divergencias': divs
+        })
+    df_nuts_diag = pd.DataFrame(nuts_diag_records)
+    excel_nuts_diag_path = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_nuts.xlsx")
+    df_nuts_diag.to_excel(excel_nuts_diag_path, index=False)
+    logger.info(f"Tabla de diagnósticos NUTS guardada en: {excel_nuts_diag_path}")
+
     # ---------------- 6. GRÁFICO DE DISPERSIÓN DE RR EN 3 PANELES ----------------
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(19, 5.5), facecolor='white')
     

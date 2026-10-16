@@ -222,15 +222,45 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
         except Exception as e:
             logger.warning(f"No se pudo adjuntar Tabla 8 en Word: {e}")
             
+    # Leer SE de modelos (c) y (d) directamente desde tabla_comparacion_modelos_bayesiana.xlsx
+    se_c_str = "27.92"
+    se_d_str = "28.03"
+    excel_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_modelos_bayesiana.xlsx")
+    if os.path.exists(excel_comp_path):
+        try:
+            df_comp_temp = pd.read_excel(excel_comp_path)
+            row_c = df_comp_temp[df_comp_temp['Modelo'].str.contains('No Estructurado', case=False, na=False)]
+            if not row_c.empty and 'se' in row_c.columns:
+                se_c_str = f"{row_c['se'].values[0]:.2f}"
+            row_d = df_comp_temp[df_comp_temp['Modelo'].str.contains('BYM2', case=False, na=False)]
+            if not row_d.empty and 'se' in row_d.columns:
+                se_d_str = f"{row_d['se'].values[0]:.2f}"
+        except Exception as e:
+            logger.warning(f"No se pudo leer SE de {excel_comp_path}: {e}")
+
+    # Leer rho empírico directamente desde tabla_comparacion_advi_nuts.xlsx
+    rho_advi_str = "0.9998"
+    rho_nuts_str = "0.8199"
+    excel_nuts_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
+    if os.path.exists(excel_nuts_path):
+        try:
+            df_nuts_temp = pd.read_excel(excel_nuts_path)
+            row_rho = df_nuts_temp[df_nuts_temp.iloc[:, 1].str.contains('rho', case=False, na=False)]
+            if not row_rho.empty:
+                rho_advi_str = f"{row_rho['Media_ADVI'].values[0]:.4f}"
+                rho_nuts_str = f"{row_rho['Media_NUTS'].values[0]:.4f}"
+        except Exception as e:
+            logger.warning(f"No se pudo leer rho de {excel_nuts_path}: {e}")
+
     # Discusión Metodológica de Modelos Bayesianos
     p_disc = doc.add_paragraph()
     p_disc.paragraph_format.space_after = Pt(12)
     p_disc.paragraph_format.line_spacing = 1.15
     add_paragraph_run(p_disc, "Nota Metodológica sobre Inferencia Variacional (ADVI), Comparación de Modelos y Validación con NUTS:\n", bold=True, size_pt=10.5)
     add_paragraph_run(p_disc, "1. Inferencia Principal mediante ADVI y Criterio Unificado de Convergencia: El método principal de estimación de la tesis es Inferencia Variacional por Diferenciación Automática (ADVI) en PyMC, optimizando el ELBO mediante Adam (learning_rate = 0.005) durante 50,000 iteraciones. Se definió un criterio formal de convergencia unificado: la variación de la media móvil del ELBO en las últimas 5,000 iteraciones respecto a las 5,000 anteriores debe ser menor al 0.1% (< 0.001).\n"
-                              "2. Modelo de Referencia por Capacidad Predictiva y Parsimonia: En la comparación formal fuera de muestra (LOO-CV), el Modelo (b) Binomial Negativa (ICAR) obtiene la mayor densidad predictiva esperada (ELPD_LOO = -1,233.75, SE = 26.76) y el menor número de observaciones con Pareto-k > 0.7 (27 observaciones). El Modelo (c) Besag ICAR + No Estructurado (ELPD_LOO = -1,241.65, SE = 26.96, 38 observaciones k > 0.7) y el Modelo (d) BYM2 (ELPD_LOO = -1,242.92, SE = 26.97) presentan densidades predictivas cercanas. La diferencia entre el Modelo (b) y el Modelo (c) es de 7.90 puntos con dse = 4.18, es decir, menor a dos errores estándar (|ΔELPD| < 2·dse = 8.36). En la práctica ambos modelos empatan estadísticamente; por el principio de parsimonia (Navaja de Ockham: menor número de parámetros libres) y mejor comportamiento diagnóstico de Pareto-k, se selecciona formalmente el Modelo (b) como el modelo ganador de referencia metodológica de la tesis.\n"
-                              "3. Parámetro de Mezcla Espacial (rho) y Advertencia Interpretativa: En el modelo BYM2, el parámetro rho con prior Beta(0.5, 0.5) presenta una fuerte discrepancia entre métodos de inferencia: bajo ADVI converge a rho ≈ 0.027, mientras que bajo muestreo exacto NUTS converge a rho ≈ 0.813. Por consiguiente, se advierte explícitamente que la lectura de rho bajo ADVI no es fiable para cuantificar la proporción de varianza espacial atribuible a contigüidad territorial.\n"
-                              "4. Diagnóstico de Pareto-k: En paneles cortos (T = 2 años) sobre 244 subcircuitos, la exclusión de una observación modifica la distribución condicional de los efectos latentes locales, elevando las ponderaciones de importancia con valores de k > 0.7. Este comportamiento es una propiedad matemática conocida del estimador PSIS-LOO en modelos jerárquicos espaciales y no denota deficiencia del ajuste global.\n"
+                              f"2. Modelo de Referencia por Capacidad Predictiva y Parsimonia: En la comparación formal fuera de muestra (LOO-CV), el Modelo (b) Binomial Negativa (ICAR) obtiene la mayor densidad predictiva esperada (ELPD_LOO = -1,233.75, SE = 26.76) y el menor número de observaciones con Pareto-k > 0.7 (27 observaciones). El Modelo (c) Besag ICAR + No Estructurado (ELPD_LOO = -1,241.65, SE = {se_c_str}, 38 observaciones k > 0.7) y el Modelo (d) BYM2 (ELPD_LOO = -1,242.92, SE = {se_d_str}) presentan densidades predictivas cercanas. La diferencia entre el Modelo (b) y el Modelo (c) es de 7.90 puntos con dse = 4.18, es decir, menor a dos errores estándar (|ΔELPD| < 2·dse = 8.36). En la práctica ambos modelos empatan estadísticamente; por el principio de parsimonia (Navaja de Ockham: menor número de parámetros libres) y mejor comportamiento diagnóstico de Pareto-k, se selecciona formalmente el Modelo (b) como el modelo ganador de referencia metodológica de la tesis.\n"
+                              f"3. Parámetro de Mezcla Espacial (rho) y Advertencia Interpretativa: En el modelo BYM2, el parámetro rho con prior Beta(0.5, 0.5) presenta una fuerte discrepancia entre métodos de inferencia: bajo ADVI converge a rho ≈ {rho_advi_str}, mientras que bajo muestreo exacto NUTS converge a rho ≈ {rho_nuts_str}. Por consiguiente, se advierte explícitamente que la lectura de rho bajo ADVI no es fiable para cuantificar la proporción de varianza espacial atribuible a contigüidad territorial.\n"
+                              "4. Diagnóstico de Pareto-k: En paneles cortos (T = 2 años) sobre 244 subcircuitos, la exclusión de una observación modifica la distribución condicional de los efectos latentes locales, elevando las ponderaciones de importancia con valores de k > 0.7.\n"
                               "5. Contraste Anual (2025 vs. 2024): Al modelar dos años completos, un proceso autorregresivo RW1 no es paramétricamente identificable frente al intercepto cantonal. La especificación de un contraste fijo de año (beta_year con 2024 como referencia) resuelve la identificabilidad y provee una estimación directa de la variación cantonal en 2025.\n"
                               "6. Validación Metodológica contra NUTS y Calibración de Incertidumbre: Como prueba de contraste rigurosa, se ajustó NUTS MCMC para el Modelo (b) ganador, así como para los Modelos (c) y (d). La validación empírica demuestra que ADVI reproduce fielmente el ordenamiento de los riesgos relativos espaciales (correlación de Pearson r > 0.98 y Spearman rho > 0.98). Sin embargo, ADVI subestima la dispersión de la distribución posterior (desviaciones estándar reducidas entre 40% y 70%), provocando que las probabilidades de excedencia P(RR > 1.5) bajo ADVI se concentren artificialmente en 1.00 en zonas de alto riesgo con intervalos de credibilidad estrechos (ej. Nuevo Guayaquil 3: RR = 4.40, IC [2.79, 6.91]). El cálculo complementario bajo NUTS MCMC restituye la verdadera incertidumbre posterior y provee probabilidades calibradas para la toma de decisiones policiales.\n"
                               "7. Dinámica Espacio-Temporal y Ausencia de Interacción: El modelo ajustado tiene estructura aditiva sin término de interacción espacio-temporal delta_{it}. Como consecuencia matemática directa, los riesgos relativos espaciales estimados para cada subcircuito son idénticos entre 2024 y 2025 (RR_{i, 2024} = RR_{i, 2025}, como Guasmo 1 con 4.077 en ambos años). Por tanto, la clasificación de 'hotspot persistente' en la Tabla 7 coincide con el conjunto de subcircuitos de alto riesgo (RR >= 1.2) y no provee evidencia de trayectorias locales divergentes. Esta formulación se presenta explícitamente como una limitación metodológica del modelo aditivo.", size_pt=9.5)
@@ -281,6 +311,15 @@ def run_stage13(stats_eda: dict, df_comp: pd.DataFrame, df_moran_global: pd.Data
             create_word_table_from_df(doc, df_corr_c, "Tabla 13: Correlación de Riesgos Relativos Espaciales ADVI vs. NUTS por Subcircuito (Modelos b, c y d, N=244)")
         except Exception as e:
             logger.warning(f"No se pudo adjuntar Tabla 13 en Word: {e}")
+
+    # 14. Tabla 14: Diagnósticos de Muestreo NUTS (R-hat, ESS y Divergencias)
+    excel_nuts_diag = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_nuts.xlsx")
+    if os.path.exists(excel_nuts_diag):
+        try:
+            df_diag_nuts = pd.read_excel(excel_nuts_diag)
+            create_word_table_from_df(doc, df_diag_nuts, "Tabla 14: Diagnósticos de Muestreo NUTS: R-hat Máximo, Tamaño de Muestra Efectivo Mínimo y Divergencias")
+        except Exception as e:
+            logger.warning(f"No se pudo adjuntar Tabla 14 en Word: {e}")
 
     # Guardar Documento Word
     word_path = os.path.join(config.TABLES_DIR, "Reporte_Tesis_Flujo_Bayesiano.docx")
