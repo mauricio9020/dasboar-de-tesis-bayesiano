@@ -208,20 +208,42 @@ df_anual_map, df_hotspots_map = load_annual_risk_data()
 
 @st.cache_resource
 def load_pymc_trace():
-    trace_path = os.path.join(config.MODELS_DIR, "pymc_trace.nc")
-    if os.path.exists(trace_path):
-        import shutil
-        temp_trace_path = os.path.join(config.MODELS_DIR, "pymc_trace_temp_dashboard.nc")
-        try:
-            shutil.copy2(trace_path, temp_trace_path)
-            return az.from_netcdf(temp_trace_path)
-        except Exception:
-            try:
-                return az.from_netcdf(trace_path)
-            except Exception as e:
-                import logging
-                logging.warning(f"No se pudo cargar la traza bayesiana desde NetCDF: {e}")
-                return None
+    import tempfile
+    import shutil
+    import logging
+
+    candidate_paths = [
+        os.path.join(config.MODELS_DIR, "pymc_trace.nc"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "models", "pymc_trace.nc"),
+        os.path.abspath("outputs/models/pymc_trace.nc"),
+        "outputs/models/pymc_trace.nc",
+    ]
+    
+    trace_path = None
+    for p in candidate_paths:
+        if os.path.exists(p):
+            trace_path = p
+            break
+
+    if not trace_path:
+        logging.warning("No se encontró pymc_trace.nc en ninguna ruta candidata.")
+        return None
+
+    # Intento 1: lectura directa
+    try:
+        return az.from_netcdf(trace_path)
+    except Exception as e1:
+        logging.warning(f"Lectura directa falló ({e1}), intentando copia temporal...")
+
+    # Intento 2: copia a directorio temporal del sistema
+    try:
+        temp_dir = tempfile.gettempdir()
+        temp_file = os.path.join(temp_dir, "pymc_trace_app_copy.nc")
+        shutil.copy2(trace_path, temp_file)
+        return az.from_netcdf(temp_file)
+    except Exception as e2:
+        logging.warning(f"Copia temporal en tempdir falló ({e2})")
+
     return None
 
 trace = load_pymc_trace()
@@ -918,87 +940,85 @@ with tab_modelo_bayesiano:
     st.header("🧠 Inferencia y Modelado Bayesiano Jerárquico")
     st.markdown("Esta sección presenta de manera detallada el modelo probabilístico espacio-temporal estimado mediante PyMC y ArviZ.")
     
-    # Intentar cargar la traza
-    if trace is None:
-        st.warning("⚠️ No se encontró la traza de inferencia bayesiana `pymc_trace.nc`. Por favor ejecuta `run_pipeline.py` para entrenar el modelo.")
+    # Sub-pestañas dentro de la sección bayesiana
+    subtab_espec, subtab_post, subtab_comp, subtab_nuts, subtab_mapas, subtab_resumen = st.tabs([
+        "📖 Pestaña 1: Especificación del Modelo",
+        "📈 Pestaña 2: Distribuciones Posteriores",
+        "📊 Pestaña 3: Comparación del Modelo",
+        "⚖️ Pestaña 4: Validación ADVI vs. NUTS",
+        "🗺️ Pestaña 5: Mapas Bayesianos",
+        "📝 Pestaña 6: Resumen del Modelo"
+    ])
+    
+    # Obtener variables e índices para mapeo
+    if df_anual_map is not None:
+        sub_codes_loc = sorted(df_anual_map['cod_subcircu'].unique())
+        anios_loc = sorted(df_anual_map['Anio'].unique())
     else:
+        sub_codes_loc = []
+        anios_loc = []
         
-        # Sub-pestañas dentro de la sección bayesiana
-        subtab_espec, subtab_post, subtab_comp, subtab_nuts, subtab_mapas, subtab_resumen = st.tabs([
-            "📖 Pestaña 1: Especificación del Modelo",
-            "📈 Pestaña 2: Distribuciones Posteriores",
-            "📊 Pestaña 3: Comparación del Modelo",
-            "⚖️ Pestaña 4: Validación ADVI vs. NUTS",
-            "🗺️ Pestaña 5: Mapas Bayesianos",
-            "📝 Pestaña 6: Resumen del Modelo"
-        ])
+    # Pestaña 1: Especificación del Modelo
+    with subtab_espec:
+        st.subheader("Especificación Matemática y Estructura Jerárquica")
+        st.markdown("""
+        El modelo ajustado para estimar los conteos esperados y el riesgo relativo de muertes violentas en Guayaquil se formula como un modelo Bayesiano Jerárquico Espacio-Temporal con verosimilitud **Binomial Negativa** para controlar la sobredispersión territorial extrema.
         
-        # Obtener variables e índices para mapeo
-        if df_anual_map is not None:
-            sub_codes_loc = sorted(df_anual_map['cod_subcircu'].unique())
-            anios_loc = sorted(df_anual_map['Anio'].unique())
+        #### 1. Modelo de referencia seleccionado
+        **Modelo (b): Binomial Negativa con ICAR**
+        
+        - **Verosimilitud (Likelihood):**
+          $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
+        
+        - **Función de Enlace (Log-Link):**
+          $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$$
+        
+        - **Componente Espacial Estructurado (ICAR):**
+          $$\\phi \\sim \\text{ICAR}(W, \\sigma_\\phi^2)$$
+          
+        Donde:
+        - $Y_{it}$: Número de homicidios observados en el subcircuito $i$ en el año $t$.
+        - $\\mu_{it}$: Media esperada condicional ajustada por el modelo.
+        - $\\alpha$: Intercepto global: logaritmo del conteo esperado en 2024 para un subcircuito con log(Área) = 0 y efecto espacial nulo. No es una tasa (el modelo no usa población).
+        - $\\beta_{\\text{year}}$: Efecto fijo de año 2025 frente a la línea base 2024 con prior $\\text{Normal}(0, 1)$.
+        - $\\beta_{\\text{area}}$: Coeficiente para $\\log(\\text{Area}_i)$ con prior $\\text{Normal}(0, 1)$.
+        - $\\sigma_\\phi$: Escala del efecto espacial intrínseco autorregresivo condicional con prior $\\text{Exponential}(1.0)$.
+        - $\\alpha_{disp}$: Parámetro de dispersión de la verosimilitud Binomial Negativa con prior $\\text{Exponential}(1.0)$.
+        
+        *Justificación Metodológica:* El Modelo (b) obtiene el mayor ELPD-LOO = −1,233.75 y la menor cantidad de observaciones con Pareto-$k > 0.7$ (27 observaciones frente a 38 en el Modelo (c) y 35 en el Modelo (d)). La diferencia frente al Modelo (c) (−1,241.65) es de 7.90 puntos con dse = 4.18 (|$ \\Delta $| < 2·dse = 8.36), lo que no permite distinguirlos con claridad. Por parsimonia (menor número de parámetros al no requerir $\\sigma_\\theta$ ni efectos no estructurados $\\theta_i$), se selecciona el Modelo (b) como el modelo de referencia final de la tesis.
+        
+        *Alcance del modelo:* no incluye offset poblacional (no hay datos de población por subcircuito) ni interacción espacio-tiempo; el efecto de año es común a todos los subcircuitos. Se modelan 2024 y 2025 (488 observaciones en 244 subcircuitos); enero de 2026 queda fuera.
+        
+        #### 2. Modelos Estructurales Comparativos
+        - **Poisson jerárquico (referencia):** misma estructura lineal que el modelo (b), con efecto espacial ICAR y verosimilitud Poisson (sin parámetro de dispersión).
+        - **Modelo (c): Besag ICAR + Efecto No Estructurado (Besag et al., 1991):**
+          $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i$$
+          donde $\\theta_i \\sim \\text{Normal}(0, \\sigma_\\theta^2)$ con $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$.
+        - **Modelo (d): BYM2 Binomial Negativo (Riebler et al., 2016):**
+          $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
+
+          $$\\psi_i = \\sigma_s \\left( \\sqrt{\\rho} \\phi^*_i + \\sqrt{1 - \\rho} \\theta^*_i \\right)$$
+
+          donde $\\rho \\sim \\text{Beta}(0.5, 0.5)$ es el parámetro de mezcla espacial.
+        
+        #### 3. Distribuciones a Priori (Priors)
+        Convención: Normal(media, desviación estándar); Exponential(tasa).
+        
+        - **Intercepto Global:** $\\alpha \\sim \\text{Normal}(0, 2)$
+        - **Contraste Temporal Anual:** $\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$
+        - **Elasticidad del Área:** $\\beta_{\\text{area}} \\sim \\text{Normal}(0, 1)$
+        - **Escala Estructurada ICAR:** $\\sigma_\\phi \\sim \\text{Exponential}(1.0)$
+        - **Parámetro de Dispersión:** $\\alpha_{disp} \\sim \\text{Exponential}(1.0)$
+        - **Escala No Estructurada (Modelo c):** $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$
+        - **Escala Total y Mezcla (Modelo d):** $\\sigma_s \\sim \\text{Exponential}(1.0)$, $\\rho \\sim \\text{Beta}(0.5, 0.5)$
+        """)
+        
+    # Pestaña 2: Distribuciones Posteriores
+    with subtab_post:
+        st.subheader("Distribuciones Posteriores de los Parámetros Globales")
+        if trace is None:
+            st.warning("⚠️ No se encontró la traza de inferencia bayesiana `pymc_trace.nc` para graficar las distribuciones posteriores.")
         else:
-            sub_codes_loc = []
-            anios_loc = []
-            
-        # Pestaña 1: Especificación del Modelo
-        with subtab_espec:
-            st.subheader("Especificación Matemática y Estructura Jerárquica")
-            st.markdown("""
-            El modelo ajustado para estimar los conteos esperados y el riesgo relativo de muertes violentas en Guayaquil se formula como un modelo Bayesiano Jerárquico Espacio-Temporal con verosimilitud **Binomial Negativa** para controlar la sobredispersión territorial extrema.
-            
-            #### 1. Modelo de referencia seleccionado
-            **Modelo (b): Binomial Negativa con ICAR**
-            
-            - **Verosimilitud (Likelihood):**
-              $$Y_{it} \\sim \\text{NB}(\\mu_{it}, \\alpha_{disp})$$
-            
-            - **Función de Enlace (Log-Link):**
-              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$$
-            
-            - **Componente Espacial Estructurado (ICAR):**
-              $$\\phi \\sim \\text{ICAR}(W, \\sigma_\\phi^2)$$
-              
-            Donde:
-            - $Y_{it}$: Número de homicidios observados en el subcircuito $i$ en el año $t$.
-            - $\\mu_{it}$: Media esperada condicional ajustada por el modelo.
-            - $\\alpha$: Intercepto global: logaritmo del conteo esperado en 2024 para un subcircuito con log(Área) = 0 y efecto espacial nulo. No es una tasa (el modelo no usa población).
-            - $\\beta_{\\text{year}}$: Efecto fijo de año 2025 frente a la línea base 2024 con prior $\\text{Normal}(0, 1)$.
-            - $\\beta_{\\text{area}}$: Coeficiente para $\\log(\\text{Area}_i)$ con prior $\\text{Normal}(0, 1)$.
-            - $\\sigma_\\phi$: Escala del efecto espacial intrínseco autorregresivo condicional con prior $\\text{Exponential}(1.0)$.
-            - $\\alpha_{disp}$: Parámetro de dispersión de la verosimilitud Binomial Negativa con prior $\\text{Exponential}(1.0)$.
-            
-            *Justificación Metodológica:* El Modelo (b) obtiene el mayor ELPD-LOO = −1,233.75 y la menor cantidad de observaciones con Pareto-$k > 0.7$ (27 observaciones frente a 38 en el Modelo (c) y 35 en el Modelo (d)). La diferencia frente al Modelo (c) (−1,241.65) es de 7.90 puntos con dse = 4.18 (|$ \\Delta $| < 2·dse = 8.36), lo que no permite distinguirlos con claridad. Por parsimonia (menor número de parámetros al no requerir $\\sigma_\\theta$ ni efectos no estructurados $\\theta_i$), se selecciona el Modelo (b) como el modelo de referencia final de la tesis.
-            
-            *Alcance del modelo:* no incluye offset poblacional (no hay datos de población por subcircuito) ni interacción espacio-tiempo; el efecto de año es común a todos los subcircuitos. Se modelan 2024 y 2025 (488 observaciones en 244 subcircuitos); enero de 2026 queda fuera.
-            
-            #### 2. Modelos Estructurales Comparativos
-            - **Poisson jerárquico (referencia):** misma estructura lineal que el modelo (b), con efecto espacial ICAR y verosimilitud Poisson (sin parámetro de dispersión).
-            - **Modelo (c): Besag ICAR + Efecto No Estructurado (Besag et al., 1991):**
-              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i + \\theta_i$$
-              donde $\\theta_i \\sim \\text{Normal}(0, \\sigma_\\theta^2)$ con $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$.
-            - **Modelo (d): BYM2 Binomial Negativo (Riebler et al., 2016):**
-              $$\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t = 2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\psi_i$$
-
-              $$\\psi_i = \\sigma_s \\left( \\sqrt{\\rho} \\phi^*_i + \\sqrt{1 - \\rho} \\theta^*_i \\right)$$
-
-              donde $\\rho \\sim \\text{Beta}(0.5, 0.5)$ es el parámetro de mezcla espacial.
-            
-            #### 3. Distribuciones a Priori (Priors)
-            Convención: Normal(media, desviación estándar); Exponential(tasa).
-            
-            - **Intercepto Global:** $\\alpha \\sim \\text{Normal}(0, 2)$
-            - **Contraste Temporal Anual:** $\\beta_{\\text{year}} \\sim \\text{Normal}(0, 1)$
-            - **Elasticidad del Área:** $\\beta_{\\text{area}} \\sim \\text{Normal}(0, 1)$
-            - **Escala Estructurada ICAR:** $\\sigma_\\phi \\sim \\text{Exponential}(1.0)$
-            - **Parámetro de Dispersión:** $\\alpha_{disp} \\sim \\text{Exponential}(1.0)$
-            - **Escala No Estructurada (Modelo c):** $\\sigma_\\theta \\sim \\text{Exponential}(1.0)$
-            - **Escala Total y Mezcla (Modelo d):** $\\sigma_s \\sim \\text{Exponential}(1.0)$, $\\rho \\sim \\text{Beta}(0.5, 0.5)$
-            """)
-            
-        # Pestaña 2: Distribuciones Posteriores
-        with subtab_post:
-            st.subheader("Distribuciones Posteriores de los Parámetros Globales")
             st.markdown("Densidades marginales posteriores e intervalos HDI al 94 % de los parámetros globales del modelo de referencia (b), estimados con ADVI.")
             
             st.info("Estas densidades provienen de ADVI, que subestima la desviación estándar posterior entre 38 % y 70 % respecto a NUTS. Los intervalos reales son más anchos (por ejemplo, para beta_year: 0.25–0.39 en ADVI frente a 0.20–0.42 en NUTS). La comparación completa está en la subpestaña «Validación ADVI vs. NUTS».")
@@ -1031,573 +1051,576 @@ with tab_modelo_bayesiano:
                 - **sigma_s:** Desviación estándar total del componente espacial BYM2 (Modelo comparativo d).
                 - **rho:** Parámetro de mezcla espacial con prior Beta(0.5, 0.5) en el modelo BYM2. *Aviso metodológico:* en ADVI se estima en ~{rho_advi_str} y en NUTS en ~{rho_nuts_str}; por tanto, su estimación bajo ADVI no es fiable para cuantificar la proporción de varianza espacial por contigüidad.
                 """)
-                    
-        # Pestaña 3: Comparación del Modelo
-        with subtab_comp:
-            st.subheader("Evaluación de Información Predictiva y Ajuste Out-of-Sample")
+                
+    # Pestaña 3: Comparación del Modelo
+    with subtab_comp:
+        st.subheader("Evaluación de Información Predictiva y Ajuste Out-of-Sample")
+        
+        comp_tab1, comp_tab2 = st.tabs([
+            "📊 Sobredispersión y Criterios de Información",
+            "🧠 Comparación entre Modelos Bayesianos"
+        ])
+        
+        with comp_tab1:
+            st.markdown("Evidencia de sobredispersión con modelos clásicos de máxima verosimilitud (Poisson y Binomial Negativa, con las mismas covariables: año y log del área, sin efecto espacial) y criterios de información del modelo bayesiano de referencia (b). El AIC/BIC y el ELPD no están en la misma escala y no se comparan entre sí.")
             
-            comp_tab1, comp_tab2 = st.tabs([
-                "📊 Sobredispersión y Criterios de Información",
-                "🧠 Comparación entre Modelos Bayesianos"
-            ])
+            # Cargar métricas reales desde outputs/tables/
+            excel_crit_path = os.path.join(config.TABLES_DIR, "tabla_criterios_informacion.xlsx")
+            excel_clas_path = os.path.join(config.TABLES_DIR, "tabla_modelos_clasicos.xlsx")
             
-            with comp_tab1:
-                st.markdown("Evidencia de sobredispersión con modelos clásicos de máxima verosimilitud (Poisson y Binomial Negativa, con las mismas covariables: año y log del área, sin efecto espacial) y criterios de información del modelo bayesiano de referencia (b). El AIC/BIC y el ELPD no están en la misma escala y no se comparan entre sí.")
-                
-                # Cargar métricas reales desde outputs/tables/
-                excel_crit_path = os.path.join(config.TABLES_DIR, "tabla_criterios_informacion.xlsx")
-                excel_clas_path = os.path.join(config.TABLES_DIR, "tabla_modelos_clasicos.xlsx")
-                
-                waic_val = "N/D"
-                loo_val = "N/D"
-                if os.path.exists(excel_crit_path):
-                    try:
-                        df_crit = pd.read_excel(excel_crit_path)
-                        crit_map = dict(zip(df_crit['Métrica'], df_crit['Valor']))
-                        if 'ELPD_WAIC' in crit_map:
-                            waic_val = f"{crit_map['ELPD_WAIC']:,.2f}"
-                        elif 'WAIC' in crit_map:
-                            waic_val = f"{crit_map['WAIC']:,.2f}"
-                        if 'ELPD_LOO' in crit_map:
-                            loo_val = f"{crit_map['ELPD_LOO']:,.2f}"
-                        elif 'LOO' in crit_map:
-                            loo_val = f"{crit_map['LOO']:,.2f}"
-                    except Exception as e:
-                        st.error(f"Error al leer criterios de información: {e}")
-                
-                col_c1, col_c2 = st.columns(2)
-                with col_c1:
-                    st.metric(label="ELPD-WAIC, modelo (b) (escala log)", value=waic_val)
-                with col_c2:
-                    st.metric(label="ELPD-LOO, modelo (b) (escala log)", value=loo_val)
-                
-                if os.path.exists(excel_clas_path):
-                    st.markdown("#### Comparación Frecuentista Clásica (Evidencia de Sobredispersión):")
-                    try:
-                        df_clas = pd.read_excel(excel_clas_path)
-                        st.dataframe(df_clas.style.format(precision=2), hide_index=True, width="stretch")
-                    except Exception as e:
-                        st.error(f"Error al leer tabla clásica: {e}")
-                
-                st.markdown(f"""
-                #### Evaluación del Desempeño Predictivo y Generalización:
-                El modelo bayesiano jerárquico ajustado presenta un **ELPD-WAIC** de **{waic_val}** y un **ELPD-LOO** de **{loo_val}** (en escala logarítmica de densidad predictiva esperada).
-                
-                1. **Capacidad predictiva (WAIC / LOO-CV):** ambos criterios estiman la densidad predictiva esperada para datos no observados penalizando la complejidad efectiva. Un ELPD mayor indica mejor capacidad predictiva esperada; el modelo (b) tiene el mayor ELPD-LOO entre los modelos comparados. Con 27 observaciones con Pareto-k > 0.7, el ELPD-LOO debe leerse con cautela.
-                2. **Tratamiento de la sobredispersión:** la verosimilitud **Binomial Negativa** introduce el parámetro $\\alpha_{{disp}}$ y permite que la varianza supere a la media (Var = μ + μ²/α_disp). En los datos, la razón varianza/media es 29.03, y el AIC baja de 7107.31 (Poisson) a 3114.81 (Binomial Negativa).
-                3. **Suavizado espacial:** el componente espacial **ICAR** comparte información entre subcircuitos vecinos y estabiliza las estimaciones en zonas con pocos registros. El efecto de año es un efecto fijo y no se suaviza.
-                """)
-                
-            with comp_tab2:
-                st.markdown("Comparación de bondad de ajuste y capacidad predictiva entre cuatro formulaciones bayesianas jerárquicas, ajustadas con ADVI (Adam, lr = 0.005, 50,000 iteraciones).")
-                
-                # Cargar tabla comparativa bayesiana real generada por stage8
-                excel_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_modelos_bayesiana.xlsx")
-                if os.path.exists(excel_comp_path):
-                    try:
-                        df_comp_bayes = pd.read_excel(excel_comp_path)
-                        cols_bayes = [
-                            'Modelo', 'elpd_loo', 'se', 'elpd_diff', 'dse',
-                            'weight', 'p_loo', 'k > 0.7', 'elpd_waic'
-                        ]
-                        rename_bayes = {
-                            'Modelo': 'Modelo',
-                            'elpd_loo': 'ELPD-LOO',
-                            'se': 'SE',
-                            'elpd_diff': 'Δ ELPD',
-                            'dse': 'dse',
-                            'weight': 'Peso (stacking)',
-                            'p_loo': 'p_loo',
-                            'k > 0.7': 'Pareto-k > 0.7',
-                            'elpd_waic': 'ELPD-WAIC'
-                        }
-                        df_mostrar = df_comp_bayes[cols_bayes].rename(columns=rename_bayes)
-                        st.dataframe(
-                            df_mostrar,
-                            hide_index=True,
-                            width="stretch",
-                            column_config={
-                                "ELPD-LOO": st.column_config.NumberColumn(format="%.2f"),
-                                "SE": st.column_config.NumberColumn(format="%.2f"),
-                                "Δ ELPD": st.column_config.NumberColumn(format="%.2f"),
-                                "dse": st.column_config.NumberColumn(format="%.2f"),
-                                "Peso (stacking)": st.column_config.NumberColumn(format="%.3f"),
-                                "p_loo": st.column_config.NumberColumn(format="%.2f"),
-                                "Pareto-k > 0.7": st.column_config.NumberColumn(format="%d"),
-                                "ELPD-WAIC": st.column_config.NumberColumn(format="%.2f"),
-                            }
-                        )
-                        
-                        st.info("📌 Nota metodológica sobre selección de modelos: el modelo (b) Binomial Negativa (ICAR) tiene el mayor ELPD-LOO (−1,233.75; SE = 26.76) y el menor número de observaciones con Pareto-k > 0.7 (27, frente a 38 en el modelo (c), 35 en el (d) y 92 en el Poisson jerárquico). Frente al modelo (c), la diferencia es de 7.90 puntos con dse = 4.18, menor que 2·dse, por lo que no se distinguen con claridad. Frente al modelo (d), la diferencia es de 9.17 con dse = 4.35, mayor que 2·dse. Frente al Poisson es de 135.47. El peso de apilamiento (stacking) de (b) es 0.99. Por parsimonia (menos parámetros) y mejor diagnóstico de Pareto-k, se adopta el modelo (b) como referencia de la tesis.")
-                        
-                        st.caption("Las formulaciones matemáticas de los modelos comparados están en la Pestaña 1: Especificación del Modelo.")
-                    except Exception as e:
-                        st.error(f"Error al leer la tabla de comparación bayesiana: {e}")
-                else:
-                    st.warning("⚠️ La tabla de comparación de modelos (`tabla_comparacion_modelos_bayesiana.xlsx`) aún no ha sido generada. Ejecuta `python run_pipeline.py` en la terminal para ajustar formalmente los 4 modelos mediante ADVI.")
+            waic_val = "N/D"
+            loo_val = "N/D"
+            if os.path.exists(excel_crit_path):
+                try:
+                    df_crit = pd.read_excel(excel_crit_path)
+                    crit_map = dict(zip(df_crit['Métrica'], df_crit['Valor']))
+                    if 'ELPD_WAIC' in crit_map:
+                        waic_val = f"{crit_map['ELPD_WAIC']:,.2f}"
+                    elif 'WAIC' in crit_map:
+                        waic_val = f"{crit_map['WAIC']:,.2f}"
+                    if 'ELPD_LOO' in crit_map:
+                        loo_val = f"{crit_map['ELPD_LOO']:,.2f}"
+                    elif 'LOO' in crit_map:
+                        loo_val = f"{crit_map['LOO']:,.2f}"
+                except Exception as e:
+                    st.error(f"Error al leer criterios de información: {e}")
             
-        # Pestaña 4: Validación ADVI vs. NUTS
-        with subtab_nuts:
-            st.subheader("Validación Metodológica: ADVI vs. NUTS (MCMC) y Estabilidad de Semillas")
-            st.markdown("""
-            **Justificación Metodológica:**
-            - **ADVI (Automatic Differentiation Variational Inference)** es el método de inferencia principal de la tesis por su alta eficiencia computacional en modelos espaciales jerárquicos de alta dimensión ($V=244$ nodos, múltiples hiperparámetros de escala y sobredispersión).
-            - **NUTS (No-U-Turn Sampler, MCMC)** se utiliza estrictamente como **patrón de validación metodológica** sobre el modelo de referencia ganador (Modelo b: Binomial Negativa ICAR), así como sobre los Modelos (c) y (d), empleando exactamente la misma formulación y los mismos priors.
-            - Esta validación indica que ADVI conserva el ordenamiento de los riesgos relativos espaciales (correlaciones de Pearson y de Spearman superiores a 0.99 en los tres modelos) y reproduce los coeficientes fijos del modelo (b): $\\beta_{\\text{year}}$ = 0.321 en ADVI frente a 0.310 en NUTS y $\\beta_{\\text{area}}$ = 0.324 frente a 0.322.
-            - **Incertidumbre y probabilidades de excedencia:** ADVI subestima la desviación estándar posterior entre 38 % y 70 % respecto a NUTS (salvo en $\\alpha_{\\text{disp}}$), por lo que las probabilidades $P(RR > 1.5)$ bajo ADVI se saturan: 37 subcircuitos tienen $P \\geq 0.90$ con ADVI frente a 30 con NUTS. Ejemplo: Nuevo Guayaquil 3 tiene RR mediano 4.39 con IC 95 % [2.79, 6.91] en ADVI, y 4.20 con [2.30, 8.14] en NUTS. Por eso las probabilidades que se reportan en la tesis son las de NUTS para el modelo final; con 2 cadenas, también son una aproximación.
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                st.metric(label="ELPD-WAIC, modelo (b) (escala log)", value=waic_val)
+            with col_c2:
+                st.metric(label="ELPD-LOO, modelo (b) (escala log)", value=loo_val)
+            
+            if os.path.exists(excel_clas_path):
+                st.markdown("#### Comparación Frecuentista Clásica (Evidencia de Sobredispersión):")
+                try:
+                    df_clas = pd.read_excel(excel_clas_path)
+                    st.dataframe(df_clas.style.format(precision=2), hide_index=True, width="stretch")
+                except Exception as e:
+                    st.error(f"Error al leer tabla clásica: {e}")
+            
+            st.markdown(f"""
+            #### Evaluación del Desempeño Predictivo y Generalización:
+            El modelo bayesiano jerárquico ajustado presenta un **ELPD-WAIC** de **{waic_val}** y un **ELPD-LOO** de **{loo_val}** (en escala logarítmica de densidad predictiva esperada).
+            
+            1. **Capacidad predictiva (WAIC / LOO-CV):** ambos criterios estiman la densidad predictiva esperada para datos no observados penalizando la complejidad efectiva. Un ELPD mayor indica mejor capacidad predictiva esperada; el modelo (b) tiene el mayor ELPD-LOO entre los modelos comparados. Con 27 observaciones con Pareto-k > 0.7, el ELPD-LOO debe leerse con cautela.
+            2. **Tratamiento de la sobredispersión:** la verosimilitud **Binomial Negativa** introduce el parámetro $\\alpha_{{disp}}$ y permite que la varianza supere a la media (Var = μ + μ²/α_disp). En los datos, la razón varianza/media es 29.03, y el AIC baja de 7107.31 (Poisson) a 3114.81 (Binomial Negativa).
+            3. **Suavizado espacial:** el componente espacial **ICAR** comparte información entre subcircuitos vecinos y estabiliza las estimaciones en zonas con pocos registros. El efecto de año es un efecto fijo y no se suaviza.
             """)
             
-            nuts_tab1, nuts_tab2 = st.tabs([
-                "⚖️ Comparación Paramétrica ADVI vs. NUTS",
-                "🌱 Estabilidad entre Semillas (ADVI)"
-            ])
+        with comp_tab2:
+            st.markdown("Comparación de bondad de ajuste y capacidad predictiva entre cuatro formulaciones bayesianas jerárquicas, ajustadas con ADVI (Adam, lr = 0.005, 50,000 iteraciones).")
             
-            with nuts_tab1:
-                st.markdown("#### Tabla Comparativa de Parámetros: ADVI vs. NUTS (Modelos b, c y d)")
-                nuts_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
-                if os.path.exists(nuts_comp_path):
-                    try:
-                        df_nuts_comp = pd.read_excel(nuts_comp_path)
-                        st.dataframe(df_nuts_comp.style.format(precision=3), hide_index=True, width="stretch", height=580)
-                        
-                        rho_advi_val, rho_nuts_val = get_rho_advi_nuts_str()
-                        st.warning(f"""
-                        ⚠️ **Aviso Metodológico Riguroso sobre Hiperparámetros:**
-                        - **Coeficientes fijos (modelo b):** ADVI reproduce el contraste de año ($\\beta_{{\\text{{year}}}}$: 0.321 vs. 0.310) y la elasticidad del área ($\\beta_{{\\text{{area}}}}$: 0.324 vs. 0.322). En los modelos (c) y (d), $\\beta_{{\\text{{area}}}}$ difiere más (≈ 0.32 en ADVI frente a ≈ 0.23 en NUTS).
-                        - **Subestimación de incertidumbre:** la desviación estándar de ADVI es entre 38 % y 70 % menor que la de NUTS en $\\alpha$, $\\beta_{{\\text{{year}}}}$, $\\beta_{{\\text{{area}}}}$ y $\\sigma_\\phi$; en $\\alpha_{{\\text{{disp}}}}$ no hay subestimación (cociente 1.01).
-                        - **Hiperparámetros:** en el modelo (b), $\\sigma_\\phi$ es 2.59 con ADVI y 2.05 con NUTS, y $\\alpha_{{\\text{{disp}}}}$ es 6.98 frente a 5.12. En el BYM2, el parámetro de mezcla $\\rho$ se estima en ~{rho_advi_val} con ADVI y en ~{rho_nuts_val} con NUTS, aunque esa estimación de NUTS es poco precisa (R-hat 1.048, ESS_tail 41). Las estimaciones de hiperparámetros de ADVI deben presentarse junto a las de NUTS.
-                        """)
-                    except Exception as e:
-                        st.error(f"Error al cargar la tabla de validación ADVI vs. NUTS: {e}")
-                else:
-                    st.info("La tabla comparativa ADVI vs. NUTS se generará al ejecutar `python run_pipeline.py`.")
+            # Cargar tabla comparativa bayesiana real generada por stage8
+            excel_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_modelos_bayesiana.xlsx")
+            if os.path.exists(excel_comp_path):
+                try:
+                    df_comp_bayes = pd.read_excel(excel_comp_path)
+                    cols_bayes = [
+                        'Modelo', 'elpd_loo', 'se', 'elpd_diff', 'dse',
+                        'weight', 'p_loo', 'k > 0.7', 'elpd_waic'
+                    ]
+                    rename_bayes = {
+                        'Modelo': 'Modelo',
+                        'elpd_loo': 'ELPD-LOO',
+                        'se': 'SE',
+                        'elpd_diff': 'Δ ELPD',
+                        'dse': 'dse',
+                        'weight': 'Peso (stacking)',
+                        'p_loo': 'p_loo',
+                        'k > 0.7': 'Pareto-k > 0.7',
+                        'elpd_waic': 'ELPD-WAIC'
+                    }
+                    df_mostrar = df_comp_bayes[cols_bayes].rename(columns=rename_bayes)
+                    st.dataframe(
+                        df_mostrar,
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "ELPD-LOO": st.column_config.NumberColumn(format="%.2f"),
+                            "SE": st.column_config.NumberColumn(format="%.2f"),
+                            "Δ ELPD": st.column_config.NumberColumn(format="%.2f"),
+                            "dse": st.column_config.NumberColumn(format="%.2f"),
+                            "Peso (stacking)": st.column_config.NumberColumn(format="%.3f"),
+                            "p_loo": st.column_config.NumberColumn(format="%.2f"),
+                            "Pareto-k > 0.7": st.column_config.NumberColumn(format="%d"),
+                            "ELPD-WAIC": st.column_config.NumberColumn(format="%.2f"),
+                        }
+                    )
+                    
+                    st.info("📌 Nota metodológica sobre selección de modelos: el modelo (b) Binomial Negativa (ICAR) tiene el mayor ELPD-LOO (−1,233.75; SE = 26.76) y el menor número de observaciones con Pareto-k > 0.7 (27, frente a 38 en el modelo (c), 35 en el (d) y 92 en el Poisson jerárquico). Frente al modelo (c), la diferencia es de 7.90 puntos con dse = 4.18, menor que 2·dse, por lo que no se distinguen con claridad. Frente al modelo (d), la diferencia es de 9.17 con dse = 4.35, mayor que 2·dse. Frente al Poisson es de 135.47. El peso de apilamiento (stacking) de (b) es 0.99. Por parsimonia (menos parámetros) y mejor diagnóstico de Pareto-k, se adopta el modelo (b) como referencia de la tesis.")
+                    
+                    st.caption("Las formulaciones matemáticas de los modelos comparados están en la Pestaña 1: Especificación del Modelo.")
+                except Exception as e:
+                    st.error(f"Error al leer la tabla de comparación bayesiana: {e}")
+            else:
+                st.warning("⚠️ La tabla de comparación de modelos (`tabla_comparacion_modelos_bayesiana.xlsx`) aún no ha sido generada. Ejecuta `python run_pipeline.py` en la terminal para ajustar formalmente los 4 modelos mediante ADVI.")
+        
+    # Pestaña 4: Validación ADVI vs. NUTS
+    with subtab_nuts:
+        st.subheader("Validación Metodológica: ADVI vs. NUTS (MCMC) y Estabilidad de Semillas")
+        st.markdown("""
+        **Justificación Metodológica:**
+        - **ADVI (Automatic Differentiation Variational Inference)** es el método de inferencia principal de la tesis por su alta eficiencia computacional en modelos espaciales jerárquicos de alta dimensión ($V=244$ nodos, múltiples hiperparámetros de escala y sobredispersión).
+        - **NUTS (No-U-Turn Sampler, MCMC)** se utiliza estrictamente como **patrón de validación metodológica** sobre el modelo de referencia ganador (Modelo b: Binomial Negativa ICAR), así como sobre los Modelos (c) y (d), empleando exactamente la misma formulación y los mismos priors.
+        - Esta validación indica que ADVI conserva el ordenamiento de los riesgos relativos espaciales (correlaciones de Pearson y de Spearman superiores a 0.99 en los tres modelos) y reproduce los coeficientes fijos del modelo (b): $\\beta_{\\text{year}}$ = 0.321 en ADVI frente a 0.310 en NUTS y $\\beta_{\\text{area}}$ = 0.324 frente a 0.322.
+        - **Incertidumbre y probabilidades de excedencia:** ADVI subestima la desviación estándar posterior entre 38 % y 70 % respecto a NUTS (salvo en $\\alpha_{\\text{disp}}$), por lo que las probabilidades $P(RR > 1.5)$ bajo ADVI se saturan: 37 subcircuitos tienen $P \\geq 0.90$ con ADVI frente a 30 con NUTS. Ejemplo: Nuevo Guayaquil 3 tiene RR mediano 4.39 con IC 95 % [2.79, 6.91] en ADVI, y 4.20 con [2.30, 8.14] en NUTS. Por eso las probabilidades que se reportan en la tesis son las de NUTS para el modelo final; con 2 cadenas, también son una aproximación.
+        """)
+        
+        nuts_tab1, nuts_tab2 = st.tabs([
+            "⚖️ Comparación Paramétrica ADVI vs. NUTS",
+            "🌱 Estabilidad entre Semillas (ADVI)"
+        ])
+        
+        with nuts_tab1:
+            st.markdown("#### Tabla Comparativa de Parámetros: ADVI vs. NUTS (Modelos b, c y d)")
+            nuts_comp_path = os.path.join(config.TABLES_DIR, "tabla_comparacion_advi_nuts.xlsx")
+            if os.path.exists(nuts_comp_path):
+                try:
+                    df_nuts_comp = pd.read_excel(nuts_comp_path)
+                    st.dataframe(df_nuts_comp.style.format(precision=3), hide_index=True, width="stretch", height=580)
+                    
+                    rho_advi_val, rho_nuts_val = get_rho_advi_nuts_str()
+                    st.warning(f"""
+                    ⚠️ **Aviso Metodológico Riguroso sobre Hiperparámetros:**
+                    - **Coeficientes fijos (modelo b):** ADVI reproduce el contraste de año ($\\beta_{{\\text{{year}}}}$: 0.321 vs. 0.310) y la elasticidad del área ($\\beta_{{\\text{{area}}}}$: 0.324 vs. 0.322). En los modelos (c) y (d), $\\beta_{{\\text{{area}}}}$ difiere más (≈ 0.32 en ADVI frente a ≈ 0.23 en NUTS).
+                    - **Subestimación de incertidumbre:** la desviación estándar de ADVI es entre 38 % y 70 % menor que la de NUTS en $\\alpha$, $\\beta_{{\\text{{year}}}}$, $\\beta_{{\\text{{area}}}}$ y $\\sigma_\\phi$; en $\\alpha_{{\\text{{disp}}}}$ no hay subestimación (cociente 1.01).
+                    - **Hiperparámetros:** en el modelo (b), $\\sigma_\\phi$ es 2.59 con ADVI y 2.05 con NUTS, y $\\alpha_{{\\text{{disp}}}}$ es 6.98 frente a 5.12. En el BYM2, el parámetro de mezcla $\\rho$ se estima en ~{rho_advi_val} con ADVI y en ~{rho_nuts_val} con NUTS, aunque esa estimación de NUTS es poco precisa (R-hat 1.048, ESS_tail 41). Las estimaciones de hiperparámetros de ADVI deben presentarse junto a las de NUTS.
+                    """)
+                except Exception as e:
+                    st.error(f"Error al cargar la tabla de validación ADVI vs. NUTS: {e}")
+            else:
+                st.info("La tabla comparativa ADVI vs. NUTS se generará al ejecutar `python run_pipeline.py`.")
 
-                st.markdown("#### Diagnósticos de Muestreo NUTS (R-hat, Tamaño Efectivo y Divergencias)")
-                diag_nuts_path = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_nuts.xlsx")
-                if os.path.exists(diag_nuts_path):
-                    try:
-                        df_diag_nuts = pd.read_excel(diag_nuts_path)
-                        st.dataframe(df_diag_nuts, hide_index=True, width="stretch")
-                        st.caption("Con 2 cadenas de 1,000 muestras, el modelo (b) alcanza R-hat máximo de 1.008 y ESS_bulk mínimo de 337 (umbral habitual: R-hat < 1.01 y ESS > 400). Los modelos (c) y (d) tienen R-hat de 1.013 y 1.048 y ESS_bulk de 119 y 68, por lo que su comparación con ADVI es orientativa.")
-                    except Exception as e:
-                        st.error(f"Error al cargar tabla de diagnósticos NUTS: {e}")
+            st.markdown("#### Diagnósticos de Muestreo NUTS (R-hat, Tamaño Efectivo y Divergencias)")
+            diag_nuts_path = os.path.join(config.TABLES_DIR, "tabla_diagnosticos_nuts.xlsx")
+            if os.path.exists(diag_nuts_path):
+                try:
+                    df_diag_nuts = pd.read_excel(diag_nuts_path)
+                    st.dataframe(df_diag_nuts, hide_index=True, width="stretch")
+                    st.caption("Con 2 cadenas de 1,000 muestras, el modelo (b) alcanza R-hat máximo de 1.008 y ESS_bulk mínimo de 337 (umbral habitual: R-hat < 1.01 y ESS > 400). Los modelos (c) y (d) tienen R-hat de 1.013 y 1.048 y ESS_bulk de 119 y 68, por lo que su comparación con ADVI es orientativa.")
+                except Exception as e:
+                    st.error(f"Error al cargar tabla de diagnósticos NUTS: {e}")
+                
+            st.markdown("#### Correlación de Riesgos Relativos Espaciales (RR) por Subcircuito (ADVI vs. NUTS)")
+            corr_path = os.path.join(config.TABLES_DIR, "tabla_correlacion_rr_advi_nuts.xlsx")
+            if os.path.exists(corr_path):
+                try:
+                    df_corr_rr = pd.read_excel(corr_path)
+                    st.dataframe(
+                        df_corr_rr.style.format(
+                            {"Pearson_p_valor": "{:.1e}", "Spearman_p_valor": "{:.1e}"},
+                            precision=4
+                        ),
+                        hide_index=True,
+                        width="stretch"
+                    )
+                except Exception as e:
+                    st.error(f"Error al cargar tabla de correlaciones RR: {e}")
                     
-                st.markdown("#### Correlación de Riesgos Relativos Espaciales (RR) por Subcircuito (ADVI vs. NUTS)")
-                corr_path = os.path.join(config.TABLES_DIR, "tabla_correlacion_rr_advi_nuts.xlsx")
-                if os.path.exists(corr_path):
-                    try:
-                        df_corr_rr = pd.read_excel(corr_path)
-                        st.dataframe(
-                            df_corr_rr.style.format(
-                                {"Pearson_p_valor": "{:.1e}", "Spearman_p_valor": "{:.1e}"},
-                                precision=4
-                            ),
-                            hide_index=True,
-                            width="stretch"
-                        )
-                    except Exception as e:
-                        st.error(f"Error al cargar tabla de correlaciones RR: {e}")
-                        
-                st.markdown("#### Dispersión y Ajuste de Riesgos Relativos (RR) por Subcircuito (244 Subcircuitos)")
-                rr_scatter_img = os.path.join(config.FIGURES_DIR, "Figura_dispersion_rr_advi_nuts.png")
-                if os.path.exists(rr_scatter_img):
-                    st.image(rr_scatter_img, width="stretch")
-                    st.caption("ADVI conserva el orden de los riesgos relativos (Pearson 0.998 y Spearman 0.998 en el modelo b), pero tiende a inflar los valores altos: la pendiente de la regresión ADVI–NUTS es 1.07 en el modelo (b).")
-                else:
-                    st.info("El gráfico de dispersión de RR ADVI vs. NUTS se generará al ejecutar `python run_pipeline.py`.")
-                    
-            with nuts_tab2:
-                st.markdown("#### Evaluación de Estabilidad Estocástica entre Semillas Independientes (ADVI)")
-                st.markdown("""
-                Para evaluar si el resultado depende de la semilla, el modelo de referencia ganador (b) (Binomial Negativa ICAR) se evaluó bajo 3 semillas aleatorias independientes (42, 123 y 999) bajo el **criterio formal de convergencia unificado**: la variación de la media móvil del ELBO en las últimas 5,000 iteraciones debe ser menor al 0.1% (< 0.001) respecto de las 5,000 previas.
-                """)
-                seed_stab_path = os.path.join(config.TABLES_DIR, "tabla_estabilidad_semillas_advi.xlsx")
-                if os.path.exists(seed_stab_path):
-                    try:
-                        df_seed_stab = pd.read_excel(seed_stab_path)
-                        df_seed_stab['Semilla'] = df_seed_stab['Semilla'].astype(str)
-                        st.dataframe(df_seed_stab.style.format(precision=4), hide_index=True, width="stretch")
-                        st.warning("Las semillas 42 y 999 cumplen el criterio de convergencia; la semilla 123 no lo cumple (variación 0.20 %, frente al 0.1 % exigido). Las medias de los parámetros son estables entre semillas (desviación entre semillas de $\\beta_{\\text{year}}$ = 0.008); $\\alpha_{\\text{disp}}$ es el parámetro más sensible (6.98 a 7.55).")
-                    except Exception as e:
-                        st.error(f"Error al cargar la tabla de estabilidad de semillas: {e}")
-                else:
-                    st.info("La tabla de estabilidad de semillas se generará al ejecutar `python run_pipeline.py`.")
-            
-        # Pestaña 5: Mapas Bayesianos
-        with subtab_mapas:
-            # 1. Título y subtítulo
-            st.markdown(r"""<div style="margin-bottom: 12px;">
+            st.markdown("#### Dispersión y Ajuste de Riesgos Relativos (RR) por Subcircuito (244 Subcircuitos)")
+            rr_scatter_img = os.path.join(config.FIGURES_DIR, "Figura_dispersion_rr_advi_nuts.png")
+            if os.path.exists(rr_scatter_img):
+                st.image(rr_scatter_img, width="stretch")
+                st.caption("ADVI conserva el orden de los riesgos relativos (Pearson 0.998 y Spearman 0.998 en el modelo b), pero tiende a inflar los valores altos: la pendiente de la regresión ADVI–NUTS es 1.07 en el modelo (b).")
+            else:
+                st.info("El gráfico de dispersión de RR ADVI vs. NUTS se generará al ejecutar `python run_pipeline.py`.")
+                
+        with nuts_tab2:
+            st.markdown("#### Evaluación de Estabilidad Estocástica entre Semillas Independientes (ADVI)")
+            st.markdown("""
+            Para evaluar si el resultado depende de la semilla, el modelo de referencia ganador (b) (Binomial Negativa ICAR) se evaluó bajo 3 semillas aleatorias independientes (42, 123 y 999) bajo el **criterio formal de convergencia unificado**: la variación de la media móvil del ELBO en las últimas 5,000 iteraciones debe ser menor al 0.1% (< 0.001) respecto de las 5,000 previas.
+            """)
+            seed_stab_path = os.path.join(config.TABLES_DIR, "tabla_estabilidad_semillas_advi.xlsx")
+            if os.path.exists(seed_stab_path):
+                try:
+                    df_seed_stab = pd.read_excel(seed_stab_path)
+                    df_seed_stab['Semilla'] = df_seed_stab['Semilla'].astype(str)
+                    st.dataframe(df_seed_stab.style.format(precision=4), hide_index=True, width="stretch")
+                    st.warning("Las semillas 42 y 999 cumplen el criterio de convergencia; la semilla 123 no lo cumple (variación 0.20 %, frente al 0.1 % exigido). Las medias de los parámetros son estables entre semillas (desviación entre semillas de $\\beta_{\\text{year}}$ = 0.008); $\\alpha_{\\text{disp}}$ es el parámetro más sensible (6.98 a 7.55).")
+                except Exception as e:
+                    st.error(f"Error al cargar la tabla de estabilidad de semillas: {e}")
+            else:
+                st.info("La tabla de estabilidad de semillas se generará al ejecutar `python run_pipeline.py`.")
+        
+    # Pestaña 5: Mapas Bayesianos
+    with subtab_mapas:
+        # 1. Título y subtítulo
+        st.markdown(r"""<div style="margin-bottom: 12px;">
 <h2 style="color: #ffffff; font-weight: 700; margin: 0 0 4px 0; font-size: 24px;">Mapa probabilístico de riesgo</h2>
 <div style="color: #8b949e; font-size: 13.5px;">Probabilidad posterior de que el riesgo relativo supere 1,5 · muestreo NUTS · 244 subcircuitos de Guayaquil</div>
 </div>""", unsafe_allow_html=True)
-            
-            # 2. Selector de capa horizontal
-            opciones_capa = [
-                "P(RR>1,5) NUTS",
-                "P(RR>1,0) NUTS",
-                "RR mediano NUTS",
-                "RR mediano ADVI",
-                "Amplitud IC 95 %"
-            ]
-            
-            # Estilos CSS específicos para botones del selector horizontal
-            st.markdown(r"""<style>
+        
+        # 2. Selector de capa horizontal
+        opciones_capa = [
+            "P(RR>1,5) NUTS",
+            "P(RR>1,0) NUTS",
+            "RR mediano NUTS",
+            "RR mediano ADVI",
+            "Amplitud IC 95 %"
+        ]
+        
+        # Estilos CSS específicos para botones del selector horizontal
+        st.markdown(r"""<style>
 div[data-testid="stSegmentedControl"] {
-    margin-bottom: 12px;
+margin-bottom: 12px;
 }
 div[data-testid="stSegmentedControl"] button[aria-checked="true"] {
-    background-color: #ff3d81 !important;
-    color: #ffffff !important;
-    border-color: #ff3d81 !important;
-    font-weight: 700 !important;
+background-color: #ff3d81 !important;
+color: #ffffff !important;
+border-color: #ff3d81 !important;
+font-weight: 700 !important;
 }
 div[data-testid="stSegmentedControl"] button {
-    background-color: #161b22 !important;
-    color: #c9d1d9 !important;
-    border: 1px solid #30363d !important;
-    border-radius: 0px !important;
+background-color: #161b22 !important;
+color: #c9d1d9 !important;
+border: 1px solid #30363d !important;
+border-radius: 0px !important;
 }
 div[role="radiogroup"] label[data-checked="true"] {
-    background-color: #ff3d81 !important;
-    color: #ffffff !important;
+background-color: #ff3d81 !important;
+color: #ffffff !important;
 }
 </style>""", unsafe_allow_html=True)
+        
+        if hasattr(st, "segmented_control"):
+            capa_sel = st.segmented_control(
+                "Selección de capa",
+                options=opciones_capa,
+                default="P(RR>1,5) NUTS",
+                label_visibility="collapsed",
+                key="mapa_tipo_bayes_seg"
+            ) or "P(RR>1,5) NUTS"
+        else:
+            capa_sel = st.radio(
+                "Selección de capa",
+                options=opciones_capa,
+                index=0,
+                horizontal=True,
+                label_visibility="collapsed",
+                key="mapa_tipo_bayes_rad"
+            )
+
+        # Cargar datos requeridos (solo lectura, sin recalcular)
+        csv_path = os.path.join(config.CLEAN_DATA_DIR, "resultados_riesgo_relativo.csv")
+        if not os.path.exists(csv_path):
+            csv_path = "outputs/data/resultados_riesgo_relativo.csv"
             
-            if hasattr(st, "segmented_control"):
-                capa_sel = st.segmented_control(
-                    "Selección de capa",
-                    options=opciones_capa,
-                    default="P(RR>1,5) NUTS",
-                    label_visibility="collapsed",
-                    key="mapa_tipo_bayes_seg"
-                ) or "P(RR>1,5) NUTS"
-            else:
-                capa_sel = st.radio(
-                    "Selección de capa",
-                    options=opciones_capa,
-                    index=0,
-                    horizontal=True,
-                    label_visibility="collapsed",
-                    key="mapa_tipo_bayes_rad"
-                )
+        geojson_path = os.path.join(config.CLEAN_DATA_DIR, "subcircuitos_riesgo_completo.geojson")
+        if not os.path.exists(geojson_path):
+            geojson_path = "outputs/data/subcircuitos_riesgo_completo.geojson"
+            
+        if not os.path.exists(csv_path) or not os.path.exists(geojson_path):
+            st.warning("⚠️ No se encontraron los archivos de datos (`resultados_riesgo_relativo.csv` o `subcircuitos_riesgo_completo.geojson`).")
+        else:
+            df_rr = pd.read_csv(csv_path)
+            gdf_raw = gpd.read_file(geojson_path)
+            
+            # Unir por cod_subcircu
+            base_gdf_cols = ['cod_subcircu', 'geometry']
+            if 'subcircuito_nom' in gdf_raw.columns:
+                base_gdf_cols.append('subcircuito_nom')
+            if 'distrito_nom' in gdf_raw.columns:
+                base_gdf_cols.append('distrito_nom')
+            gdf_base = gdf_raw[base_gdf_cols].copy()
+            
+            rr_cols_merge = [c for c in df_rr.columns if c not in base_gdf_cols or c == 'cod_subcircu']
+            gdf_map_bayes = gdf_base.merge(df_rr[rr_cols_merge], on='cod_subcircu', how='inner')
+            
+            if 'subcircuito_nom' not in gdf_map_bayes.columns and 'subcircuito_nom' in df_rr.columns:
+                gdf_map_bayes['subcircuito_nom'] = df_rr['subcircuito_nom']
+            if 'distrito_nom' not in gdf_map_bayes.columns and 'distrito_nom' in df_rr.columns:
+                gdf_map_bayes['distrito_nom'] = df_rr['distrito_nom']
+                
+            gdf_map_bayes['amplitud_ic_nuts'] = (
+                gdf_map_bayes['rr_limite_sup_95_nuts'] - gdf_map_bayes['rr_limite_inf_95_nuts']
+            )
+            
+            # Paleta de 4 clases
+            COLOR_CLASE = {
+                4: '#ff3d81',  # Clase 4 (más alta)
+                3: '#ff9e3d',  # Clase 3
+                2: '#7b5ea7',  # Clase 2
+                1: '#232b36'   # Clase 1 (más baja)
+            }
+            
+            # Clasificación según la capa seleccionada
+            if capa_sel == "P(RR>1,5) NUTS":
+                val_s = gdf_map_bayes['prob_exced_1_5_nuts']
+                def get_cls(v):
+                    if v >= 0.90: return 4
+                    elif v >= 0.50: return 3
+                    elif v >= 0.10: return 2
+                    else: return 1
+                gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
+                clases_info = [
+                    (4, "Muy alta", "≥ 0.90", int((gdf_map_bayes['_clase_num'] == 4).sum())),
+                    (3, "Alta", "0.50 – 0.90", int((gdf_map_bayes['_clase_num'] == 3).sum())),
+                    (2, "Moderada", "0.10 – 0.50", int((gdf_map_bayes['_clase_num'] == 2).sum())),
+                    (1, "Baja", "< 0.10", int((gdf_map_bayes['_clase_num'] == 1).sum())),
+                ]
+                titulo_clases = "CLASES DE PROBABILIDAD"
+                subtitulo_a = "con P(RR > 1,5) ≥ 0,90 según NUTS"
+                
+            elif capa_sel == "P(RR>1,0) NUTS":
+                val_s = gdf_map_bayes['prob_exced_1_0_nuts']
+                def get_cls(v):
+                    if v >= 0.90: return 4
+                    elif v >= 0.50: return 3
+                    elif v >= 0.10: return 2
+                    else: return 1
+                gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
+                clases_info = [
+                    (4, "Muy alta", "≥ 0.90", int((gdf_map_bayes['_clase_num'] == 4).sum())),
+                    (3, "Alta", "0.50 – 0.90", int((gdf_map_bayes['_clase_num'] == 3).sum())),
+                    (2, "Moderada", "0.10 – 0.50", int((gdf_map_bayes['_clase_num'] == 2).sum())),
+                    (1, "Baja", "< 0.10", int((gdf_map_bayes['_clase_num'] == 1).sum())),
+                ]
+                titulo_clases = "CLASES DE PROBABILIDAD"
+                subtitulo_a = "con P(RR > 1,0) ≥ 0,90 según NUTS"
+                
+            elif capa_sel == "RR mediano NUTS":
+                val_s = gdf_map_bayes['rr_mediana_nuts']
+                def get_cls(v):
+                    if v >= 2.5: return 4
+                    elif v >= 1.5: return 3
+                    elif v >= 1.0: return 2
+                    else: return 1
+                gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
+                clases_info = [
+                    (4, "Muy alto", "≥ 2.5", int((gdf_map_bayes['_clase_num'] == 4).sum())),
+                    (3, "Alto", "1.5 – 2.5", int((gdf_map_bayes['_clase_num'] == 3).sum())),
+                    (2, "Moderado", "1.0 – 1.5", int((gdf_map_bayes['_clase_num'] == 2).sum())),
+                    (1, "Bajo", "< 1.0", int((gdf_map_bayes['_clase_num'] == 1).sum())),
+                ]
+                titulo_clases = "CLASES DE RIESGO RELATIVO"
+                subtitulo_a = "con RR mediano ≥ 2,5 según NUTS"
+                
+            elif capa_sel == "RR mediano ADVI":
+                val_s = gdf_map_bayes['rr_estimado_mediana']
+                def get_cls(v):
+                    if v >= 2.5: return 4
+                    elif v >= 1.5: return 3
+                    elif v >= 1.0: return 2
+                    else: return 1
+                gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
+                clases_info = [
+                    (4, "Muy alto", "≥ 2.5", int((gdf_map_bayes['_clase_num'] == 4).sum())),
+                    (3, "Alto", "1.5 – 2.5", int((gdf_map_bayes['_clase_num'] == 3).sum())),
+                    (2, "Moderado", "1.0 – 1.5", int((gdf_map_bayes['_clase_num'] == 2).sum())),
+                    (1, "Bajo", "< 1.0", int((gdf_map_bayes['_clase_num'] == 1).sum())),
+                ]
+                titulo_clases = "CLASES DE RIESGO RELATIVO (ADVI)"
+                subtitulo_a = "con RR mediano ≥ 2,5 según ADVI"
+                
+            else: # Amplitud IC 95 %
+                val_s = gdf_map_bayes['amplitud_ic_nuts']
+                q_codes, q_bins = pd.qcut(val_s, q=4, labels=[1, 2, 3, 4], retbins=True)
+                gdf_map_bayes['_clase_num'] = q_codes.astype(int)
+                clases_info = [
+                    (4, "Muy alta", f"({q_bins[3]:.2f}, {q_bins[4]:.2f}]", int((gdf_map_bayes['_clase_num'] == 4).sum())),
+                    (3, "Alta", f"({q_bins[2]:.2f}, {q_bins[3]:.2f}]", int((gdf_map_bayes['_clase_num'] == 3).sum())),
+                    (2, "Moderada", f"({q_bins[1]:.2f}, {q_bins[2]:.2f}]", int((gdf_map_bayes['_clase_num'] == 2).sum())),
+                    (1, "Baja", f"[{q_bins[0]:.2f}, {q_bins[1]:.2f}]", int((gdf_map_bayes['_clase_num'] == 1).sum())),
+                ]
+                titulo_clases = "CUARTILES DE INCERTIDUMBRE"
+                subtitulo_a = "en cuartil superior (mayor amplitud)"
+                
+            gdf_map_bayes['_fill_color'] = gdf_map_bayes['_clase_num'].map(COLOR_CLASE)
+            
+            # Preformatear datos para tooltip
+            gdf_map_bayes['Subcircuito'] = gdf_map_bayes['subcircuito_nom'].astype(str).str.title()
+            gdf_map_bayes['P(RR>1,5) NUTS'] = gdf_map_bayes['prob_exced_1_5_nuts'].map(lambda x: f"{x:.3f}")
+            gdf_map_bayes['RR mediano (NUTS)'] = gdf_map_bayes.apply(
+                lambda r: f"{r['rr_mediana_nuts']:.2f} [{r['rr_limite_inf_95_nuts']:.2f}, {r['rr_limite_sup_95_nuts']:.2f}]", axis=1
+            )
+            gdf_map_bayes['RR mediano (ADVI)'] = gdf_map_bayes['rr_estimado_mediana'].map(lambda x: f"{x:.2f}")
+            
+            # Layout en dos columnas: [2.1, 1]
+            col_map, col_panel = st.columns([2.1, 1])
+            
+            with col_map:
+                from folium.plugins import MiniMap
 
-            # Cargar datos requeridos (solo lectura, sin recalcular)
-            csv_path = os.path.join(config.CLEAN_DATA_DIR, "resultados_riesgo_relativo.csv")
-            if not os.path.exists(csv_path):
-                csv_path = "outputs/data/resultados_riesgo_relativo.csv"
-                
-            geojson_path = os.path.join(config.CLEAN_DATA_DIR, "subcircuitos_riesgo_completo.geojson")
-            if not os.path.exists(geojson_path):
-                geojson_path = "outputs/data/subcircuitos_riesgo_completo.geojson"
-                
-            if not os.path.exists(csv_path) or not os.path.exists(geojson_path):
-                st.warning("⚠️ No se encontraron los archivos de datos (`resultados_riesgo_relativo.csv` o `subcircuitos_riesgo_completo.geojson`).")
-            else:
-                df_rr = pd.read_csv(csv_path)
-                gdf_raw = gpd.read_file(geojson_path)
-                
-                # Unir por cod_subcircu
-                base_gdf_cols = ['cod_subcircu', 'geometry']
-                if 'subcircuito_nom' in gdf_raw.columns:
-                    base_gdf_cols.append('subcircuito_nom')
-                if 'distrito_nom' in gdf_raw.columns:
-                    base_gdf_cols.append('distrito_nom')
-                gdf_base = gdf_raw[base_gdf_cols].copy()
-                
-                rr_cols_merge = [c for c in df_rr.columns if c not in base_gdf_cols or c == 'cod_subcircu']
-                gdf_map_bayes = gdf_base.merge(df_rr[rr_cols_merge], on='cod_subcircu', how='inner')
-                
-                if 'subcircuito_nom' not in gdf_map_bayes.columns and 'subcircuito_nom' in df_rr.columns:
-                    gdf_map_bayes['subcircuito_nom'] = df_rr['subcircuito_nom']
-                if 'distrito_nom' not in gdf_map_bayes.columns and 'distrito_nom' in df_rr.columns:
-                    gdf_map_bayes['distrito_nom'] = df_rr['distrito_nom']
-                    
-                gdf_map_bayes['amplitud_ic_nuts'] = (
-                    gdf_map_bayes['rr_limite_sup_95_nuts'] - gdf_map_bayes['rr_limite_inf_95_nuts']
-                )
-                
-                # Paleta de 4 clases
-                COLOR_CLASE = {
-                    4: '#ff3d81',  # Clase 4 (más alta)
-                    3: '#ff9e3d',  # Clase 3
-                    2: '#7b5ea7',  # Clase 2
-                    1: '#232b36'   # Clase 1 (más baja)
-                }
-                
-                # Clasificación según la capa seleccionada
-                if capa_sel == "P(RR>1,5) NUTS":
-                    val_s = gdf_map_bayes['prob_exced_1_5_nuts']
-                    def get_cls(v):
-                        if v >= 0.90: return 4
-                        elif v >= 0.50: return 3
-                        elif v >= 0.10: return 2
-                        else: return 1
-                    gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
-                    clases_info = [
-                        (4, "Muy alta", "≥ 0.90", int((gdf_map_bayes['_clase_num'] == 4).sum())),
-                        (3, "Alta", "0.50 – 0.90", int((gdf_map_bayes['_clase_num'] == 3).sum())),
-                        (2, "Moderada", "0.10 – 0.50", int((gdf_map_bayes['_clase_num'] == 2).sum())),
-                        (1, "Baja", "< 0.10", int((gdf_map_bayes['_clase_num'] == 1).sum())),
-                    ]
-                    titulo_clases = "CLASES DE PROBABILIDAD"
-                    subtitulo_a = "con P(RR > 1,5) ≥ 0,90 según NUTS"
-                    
-                elif capa_sel == "P(RR>1,0) NUTS":
-                    val_s = gdf_map_bayes['prob_exced_1_0_nuts']
-                    def get_cls(v):
-                        if v >= 0.90: return 4
-                        elif v >= 0.50: return 3
-                        elif v >= 0.10: return 2
-                        else: return 1
-                    gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
-                    clases_info = [
-                        (4, "Muy alta", "≥ 0.90", int((gdf_map_bayes['_clase_num'] == 4).sum())),
-                        (3, "Alta", "0.50 – 0.90", int((gdf_map_bayes['_clase_num'] == 3).sum())),
-                        (2, "Moderada", "0.10 – 0.50", int((gdf_map_bayes['_clase_num'] == 2).sum())),
-                        (1, "Baja", "< 0.10", int((gdf_map_bayes['_clase_num'] == 1).sum())),
-                    ]
-                    titulo_clases = "CLASES DE PROBABILIDAD"
-                    subtitulo_a = "con P(RR > 1,0) ≥ 0,90 según NUTS"
-                    
-                elif capa_sel == "RR mediano NUTS":
-                    val_s = gdf_map_bayes['rr_mediana_nuts']
-                    def get_cls(v):
-                        if v >= 2.5: return 4
-                        elif v >= 1.5: return 3
-                        elif v >= 1.0: return 2
-                        else: return 1
-                    gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
-                    clases_info = [
-                        (4, "Muy alto", "≥ 2.5", int((gdf_map_bayes['_clase_num'] == 4).sum())),
-                        (3, "Alto", "1.5 – 2.5", int((gdf_map_bayes['_clase_num'] == 3).sum())),
-                        (2, "Moderado", "1.0 – 1.5", int((gdf_map_bayes['_clase_num'] == 2).sum())),
-                        (1, "Bajo", "< 1.0", int((gdf_map_bayes['_clase_num'] == 1).sum())),
-                    ]
-                    titulo_clases = "CLASES DE RIESGO RELATIVO"
-                    subtitulo_a = "con RR mediano ≥ 2,5 según NUTS"
-                    
-                elif capa_sel == "RR mediano ADVI":
-                    val_s = gdf_map_bayes['rr_estimado_mediana']
-                    def get_cls(v):
-                        if v >= 2.5: return 4
-                        elif v >= 1.5: return 3
-                        elif v >= 1.0: return 2
-                        else: return 1
-                    gdf_map_bayes['_clase_num'] = val_s.map(get_cls)
-                    clases_info = [
-                        (4, "Muy alto", "≥ 2.5", int((gdf_map_bayes['_clase_num'] == 4).sum())),
-                        (3, "Alto", "1.5 – 2.5", int((gdf_map_bayes['_clase_num'] == 3).sum())),
-                        (2, "Moderado", "1.0 – 1.5", int((gdf_map_bayes['_clase_num'] == 2).sum())),
-                        (1, "Bajo", "< 1.0", int((gdf_map_bayes['_clase_num'] == 1).sum())),
-                    ]
-                    titulo_clases = "CLASES DE RIESGO RELATIVO (ADVI)"
-                    subtitulo_a = "con RR mediano ≥ 2,5 según ADVI"
-                    
-                else: # Amplitud IC 95 %
-                    val_s = gdf_map_bayes['amplitud_ic_nuts']
-                    q_codes, q_bins = pd.qcut(val_s, q=4, labels=[1, 2, 3, 4], retbins=True)
-                    gdf_map_bayes['_clase_num'] = q_codes.astype(int)
-                    clases_info = [
-                        (4, "Muy alta", f"({q_bins[3]:.2f}, {q_bins[4]:.2f}]", int((gdf_map_bayes['_clase_num'] == 4).sum())),
-                        (3, "Alta", f"({q_bins[2]:.2f}, {q_bins[3]:.2f}]", int((gdf_map_bayes['_clase_num'] == 3).sum())),
-                        (2, "Moderada", f"({q_bins[1]:.2f}, {q_bins[2]:.2f}]", int((gdf_map_bayes['_clase_num'] == 2).sum())),
-                        (1, "Baja", f"[{q_bins[0]:.2f}, {q_bins[1]:.2f}]", int((gdf_map_bayes['_clase_num'] == 1).sum())),
-                    ]
-                    titulo_clases = "CUARTILES DE INCERTIDUMBRE"
-                    subtitulo_a = "en cuartil superior (mayor amplitud)"
-                    
-                gdf_map_bayes['_fill_color'] = gdf_map_bayes['_clase_num'].map(COLOR_CLASE)
-                
-                # Preformatear datos para tooltip
-                gdf_map_bayes['Subcircuito'] = gdf_map_bayes['subcircuito_nom'].astype(str).str.title()
-                gdf_map_bayes['P(RR>1,5) NUTS'] = gdf_map_bayes['prob_exced_1_5_nuts'].map(lambda x: f"{x:.3f}")
-                gdf_map_bayes['RR mediano (NUTS)'] = gdf_map_bayes.apply(
-                    lambda r: f"{r['rr_mediana_nuts']:.2f} [{r['rr_limite_inf_95_nuts']:.2f}, {r['rr_limite_sup_95_nuts']:.2f}]", axis=1
-                )
-                gdf_map_bayes['RR mediano (ADVI)'] = gdf_map_bayes['rr_estimado_mediana'].map(lambda x: f"{x:.2f}")
-                
-                # Layout en dos columnas: [2.1, 1]
-                col_map, col_panel = st.columns([2.1, 1])
-                
-                with col_map:
-                    from folium.plugins import MiniMap
+                if st.button("Restablecer vista", key="btn_reset_mapa_prob"):
+                    st.session_state['reset'] = st.session_state.get('reset', 0) + 1
 
-                    if st.button("Restablecer vista", key="btn_reset_mapa_prob"):
-                        st.session_state['reset'] = st.session_state.get('reset', 0) + 1
+                # Mapa base oscura sin API key (Esri World Dark Gray Base) con límites estrictos
+                m_bayes = folium.Map(
+                    location=[-2.17, -79.93],
+                    zoom_start=12,
+                    min_zoom=10,
+                    max_zoom=16,
+                    tiles=None,
+                    control_scale=True
+                )
+                m_bayes.options["maxBounds"] = [[-2.45, -80.20], [-1.85, -79.60]]   # evita perderse en el mapa mundial
+                m_bayes.options["maxBoundsViscosity"] = 0.8
 
-                    # Mapa base oscura sin API key (Esri World Dark Gray Base) con límites estrictos
-                    m_bayes = folium.Map(
-                        location=[-2.17, -79.93],
-                        zoom_start=12,
-                        min_zoom=10,
-                        max_zoom=16,
-                        tiles=None,
-                        control_scale=True
+                folium.TileLayer(
+                    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+                    attr="Esri",
+                    name="Esri Dark Gray"
+                ).add_to(m_bayes)
+                
+                # Polígonos con GeoJson
+                folium.GeoJson(
+                    gdf_map_bayes,
+                    style_function=lambda feature: {
+                        'fillColor': feature['properties']['_fill_color'],
+                        'color': '#0d1117',
+                        'weight': 0.5,
+                        'fillOpacity': 0.9 if feature['properties']['_clase_num'] == 1 else 0.45
+                    },
+                    tooltip=folium.GeoJsonTooltip(
+                        fields=['Subcircuito', 'P(RR>1,5) NUTS', 'RR mediano (NUTS)', 'RR mediano (ADVI)'],
+                        aliases=['Subcircuito:', 'P(RR>1,5) NUTS:', 'RR mediano NUTS (IC 95 %):', 'RR mediano ADVI:'],
+                        localize=True
                     )
-                    m_bayes.options["maxBounds"] = [[-2.45, -80.20], [-1.85, -79.60]]   # evita perderse en el mapa mundial
-                    m_bayes.options["maxBoundsViscosity"] = 0.8
-
-                    folium.TileLayer(
-                        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-                        attr="Esri",
-                        name="Esri Dark Gray"
+                ).add_to(m_bayes)
+                
+                # CircleMarkers sobre subcircuitos de las dos clases más altas (Clase 3 y 4)
+                for _, row in gdf_map_bayes[gdf_map_bayes['_clase_num'].isin([3, 4])].iterrows():
+                    if row.geometry is None:
+                        continue
+                    cent = row.geometry.centroid
+                    rr_val = float(row['rr_mediana_nuts'])
+                    rad = 4.0 + 2.2 * rr_val
+                    c_fill = COLOR_CLASE[row['_clase_num']]
+                    folium.CircleMarker(
+                        location=[cent.y, cent.x],
+                        radius=rad,
+                        color="#ffffff",
+                        weight=1,
+                        fill_color=c_fill,
+                        fill_opacity=0.85
                     ).add_to(m_bayes)
                     
-                    # Polígonos con GeoJson
-                    folium.GeoJson(
-                        gdf_map_bayes,
-                        style_function=lambda feature: {
-                            'fillColor': feature['properties']['_fill_color'],
-                            'color': '#0d1117',
-                            'weight': 0.5,
-                            'fillOpacity': 0.9 if feature['properties']['_clase_num'] == 1 else 0.45
-                        },
-                        tooltip=folium.GeoJsonTooltip(
-                            fields=['Subcircuito', 'P(RR>1,5) NUTS', 'RR mediano (NUTS)', 'RR mediano (ADVI)'],
-                            aliases=['Subcircuito:', 'P(RR>1,5) NUTS:', 'RR mediano NUTS (IC 95 %):', 'RR mediano ADVI:'],
-                            localize=True
+                # Números 1 a 5 para los 5 subcircuitos con mayor rr_mediana_nuts
+                top5_df = gdf_map_bayes.sort_values('rr_mediana_nuts', ascending=False).head(5)
+                for rank_num, (_, row) in enumerate(top5_df.iterrows(), 1):
+                    if row.geometry is None:
+                        continue
+                    cent = row.geometry.centroid
+                    folium.Marker(
+                        location=[cent.y, cent.x],
+                        icon=folium.DivIcon(
+                            html=f'<div style="font-size: 11px; font-weight: bold; color: #ffffff; text-align: center; width: 20px; height: 20px; line-height: 20px; pointer-events: none;">{rank_num}</div>',
+                            icon_size=(20, 20),
+                            icon_anchor=(10, 10)
                         )
                     ).add_to(m_bayes)
                     
-                    # CircleMarkers sobre subcircuitos de las dos clases más altas (Clase 3 y 4)
-                    for _, row in gdf_map_bayes[gdf_map_bayes['_clase_num'].isin([3, 4])].iterrows():
-                        if row.geometry is None:
-                            continue
-                        cent = row.geometry.centroid
-                        rr_val = float(row['rr_mediana_nuts'])
-                        rad = 4.0 + 2.2 * rr_val
-                        c_fill = COLOR_CLASE[row['_clase_num']]
-                        folium.CircleMarker(
-                            location=[cent.y, cent.x],
-                            radius=rad,
-                            color="#ffffff",
-                            weight=1,
-                            fill_color=c_fill,
-                            fill_opacity=0.85
-                        ).add_to(m_bayes)
-                        
-                    # Números 1 a 5 para los 5 subcircuitos con mayor rr_mediana_nuts
-                    top5_df = gdf_map_bayes.sort_values('rr_mediana_nuts', ascending=False).head(5)
-                    for rank_num, (_, row) in enumerate(top5_df.iterrows(), 1):
-                        if row.geometry is None:
-                            continue
-                        cent = row.geometry.centroid
-                        folium.Marker(
-                            location=[cent.y, cent.x],
-                            icon=folium.DivIcon(
-                                html=f'<div style="font-size: 11px; font-weight: bold; color: #ffffff; text-align: center; width: 20px; height: 20px; line-height: 20px; pointer-events: none;">{rank_num}</div>',
-                                icon_size=(20, 20),
-                                icon_anchor=(10, 10)
-                            )
-                        ).add_to(m_bayes)
-                        
-                    # MiniMap para el cantón completo en la esquina inferior izquierda
-                    MiniMap(
-                        tile_layer=folium.TileLayer(
-                            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-                            attr="Esri"
-                        ),
-                        position="bottomleft",
-                        zoom_level_offset=-4,
-                        toggle_display=True,
-                        minimized=False
-                    ).add_to(m_bayes)
-                    
-                    # Mostrar mapa con altura de 640 px
-                    st_folium(
-                        m_bayes,
-                        height=640,
-                        use_container_width=True,
-                        returned_objects=[],
-                        key=f"mapa_prob_{st.session_state.get('reset', 0)}"
-                    )
-                    
-                with col_panel:
-                    total_sub = len(gdf_map_bayes)
-                    c4 = clases_info[0][3]
-                    c3 = clases_info[1][3]
-                    c2 = clases_info[2][3]
-                    c1 = clases_info[3][3]
-                    
-                    pct4 = (c4 / total_sub) * 100
-                    pct3 = (c3 / total_sub) * 100
-                    pct2 = (c2 / total_sub) * 100
-                    pct1 = (c1 / total_sub) * 100
-                    
-                    # Tarjeta a) ZONAS DE ALTA EVIDENCIA (construida sin indentación de líneas)
-                    html_card_a = (
-                        f'<div style="background-color: #161b22; border: 1px solid #30363d; border-radius: 0px; padding: 16px 18px; margin-bottom: 12px;">'
-                        f'<div style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 12px;">ZONAS DE ALTA EVIDENCIA</div>'
-                        f'<div style="display: flex; align-items: baseline; gap: 14px;">'
-                        f'<span style="font-size: 40px; font-weight: 700; color: #ff4d8d; line-height: 1;">{c4}</span>'
-                        f'<div>'
-                        f'<div style="font-size: 15px; font-weight: 600; color: #f0f6fc; line-height: 1.2;">de {total_sub} subcircuitos</div>'
-                        f'<div style="font-size: 11px; color: #8b949e; margin-top: 3px;">{subtitulo_a}</div>'
-                        f'</div>'
-                        f'</div>'
-                        f'<div style="display: flex; width: 100%; height: 7px; border-radius: 0px; overflow: hidden; margin-top: 14px; background-color: #21262d;">'
-                        f'<div style="width: {pct4}%; background-color: #ff3d81;" title="Clase 4: {c4}"></div>'
-                        f'<div style="width: {pct3}%; background-color: #ff9e3d;" title="Clase 3: {c3}"></div>'
-                        f'<div style="width: {pct2}%; background-color: #7b5ea7;" title="Clase 2: {c2}"></div>'
-                        f'<div style="width: {pct1}%; background-color: #232b36;" title="Clase 1: {c1}"></div>'
-                        f'</div>'
-                        f'</div>'
-                    )
-                    st.markdown(html_card_a, unsafe_allow_html=True)
-                    
-                    # Tarjeta b) CLASES DE PROBABILIDAD (construida sin indentación de líneas)
-                    rows_b_html = "".join([
-                        f'<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 12px;">'
-                        f'<div style="display: flex; align-items: center; gap: 10px; width: 105px;">'
-                        f'<span style="width: 18px; height: 14px; background-color: {COLOR_CLASE[cls_id]}; border-radius: 0px; display: inline-block;"></span>'
-                        f'<span style="color: #f0f6fc; font-weight: 500;">{cls_name}</span>'
-                        f'</div>'
-                        f'<span style="color: #8b949e; font-size: 11px; font-family: monospace; text-align: left; flex: 1; padding-left: 10px;">{cls_range}</span>'
-                        f'<span style="color: #f0f6fc; font-weight: 700; font-size: 13px; text-align: right; min-width: 30px;">{cls_count}</span>'
-                        f'</div>'
-                        for cls_id, cls_name, cls_range, cls_count in clases_info
-                    ])
-                    html_card_b = (
-                        f'<div style="background-color: #161b22; border: 1px solid #30363d; border-radius: 0px; padding: 16px 18px; margin-bottom: 12px;">'
-                        f'<div style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 14px;">{titulo_clases}</div>'
-                        f'{rows_b_html}'
-                        f'</div>'
-                    )
-                    st.markdown(html_card_b, unsafe_allow_html=True)
-                    
-                    # Tarjeta c) MAYOR RIESGO RELATIVO (NUTS) (construida sin indentación de líneas)
-                    top7_df = gdf_map_bayes.sort_values('rr_mediana_nuts', ascending=False).head(7)
-                    rr_max_scale = 9.0
-                    rows_c_html = "".join([
-                        f'<div style="display: flex; align-items: center; margin-bottom: 8px; font-size: 12px;">'
-                        f'<span style="color: #8b949e; font-weight: 600; width: 14px; font-size: 11px;">{str(rank_idx) if rank_idx <= 5 else "&nbsp;"}</span>'
-                        f'<span style="color: #f0f6fc; font-weight: 500; font-size: 11.5px; width: 125px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{str(r["subcircuito_nom"]).title()}">{str(r["subcircuito_nom"]).title()}</span>'
-                        f'<span style="color: #ff4d8d; font-weight: 700; font-size: 12px; width: 34px; text-align: right; margin-right: 12px;">{float(r["rr_mediana_nuts"]):.2f}</span>'
-                        f'<div style="flex: 1; height: 14px; position: relative; min-width: 80px;">'
-                        f'<div style="position: absolute; top: 6px; left: 0; width: 100%; height: 2px; background-color: #30363d; border-radius: 1px;"></div>'
-                        f'<div style="position: absolute; top: 5px; left: {max(0.0, min(100.0, (float(r["rr_limite_inf_95_nuts"]) / rr_max_scale) * 100)):.1f}%; width: {max(2.0, min(100.0 - max(0.0, min(100.0, (float(r["rr_limite_inf_95_nuts"]) / rr_max_scale) * 100)), ((float(r["rr_limite_sup_95_nuts"]) - float(r["rr_limite_inf_95_nuts"])) / rr_max_scale) * 100)):.1f}%; height: 4px; background-color: #8b949e; border-radius: 2px;"></div>'
-                        f'<div style="position: absolute; top: 3px; left: calc({max(0.0, min(100.0, (float(r["rr_mediana_nuts"]) / rr_max_scale) * 100)):.1f}% - 4px); width: 8px; height: 8px; background-color: #ff4d8d; border: 1.5px solid #ffffff; border-radius: 50%;"></div>'
-                        f'</div>'
-                        f'</div>'
-                        for rank_idx, (_, r) in enumerate(top7_df.iterrows(), 1)
-                    ])
-                    
-                    html_card_c = (
-                        f'<div style="background-color: #161b22; border: 1px solid #30363d; border-radius: 0px; padding: 16px 18px;">'
-                        f'<div style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 12px;">MAYOR RIESGO RELATIVO (NUTS)</div>'
-                        f'{rows_c_html}'
-                        f'<div style="font-size: 10.5px; color: #8b949e; margin-top: 12px; border-top: 1px solid #21262d; padding-top: 8px;">Círculo: RR mediano · barra: intervalo de credibilidad 95 %</div>'
-                        f'</div>'
-                    )
-                    st.markdown(html_card_c, unsafe_allow_html=True)
-                    
-                # 3. Nota al pie (2 líneas)
-                st.caption(r"NUTS: 2 cadenas, 1 000 muestras. Con ADVI las probabilidades se saturan en 1,00; por eso el mapa usa NUTS.")
-                st.caption(r"Cada círculo marca un subcircuito de las dos clases más altas; su tamaño crece con el RR mediano. RR = exp(φᵢ) / media espacial de exp(φ): riesgo frente al promedio de subcircuitos, a igual año y área.")
+                # MiniMap para el cantón completo en la esquina inferior izquierda
+                MiniMap(
+                    tile_layer=folium.TileLayer(
+                        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+                        attr="Esri"
+                    ),
+                    position="bottomleft",
+                    zoom_level_offset=-4,
+                    toggle_display=True,
+                    minimized=False
+                ).add_to(m_bayes)
                 
-        # Pestaña 6: Resumen del Modelo
-        with subtab_resumen:
-            st.subheader("Tabla Resumen del Modelo Posterior (az.summary)")
+                # Mostrar mapa con altura de 640 px
+                st_folium(
+                    m_bayes,
+                    height=640,
+                    use_container_width=True,
+                    returned_objects=[],
+                    key=f"mapa_prob_{st.session_state.get('reset', 0)}"
+                )
+                
+            with col_panel:
+                total_sub = len(gdf_map_bayes)
+                c4 = clases_info[0][3]
+                c3 = clases_info[1][3]
+                c2 = clases_info[2][3]
+                c1 = clases_info[3][3]
+                
+                pct4 = (c4 / total_sub) * 100
+                pct3 = (c3 / total_sub) * 100
+                pct2 = (c2 / total_sub) * 100
+                pct1 = (c1 / total_sub) * 100
+                
+                # Tarjeta a) ZONAS DE ALTA EVIDENCIA (construida sin indentación de líneas)
+                html_card_a = (
+                    f'<div style="background-color: #161b22; border: 1px solid #30363d; border-radius: 0px; padding: 16px 18px; margin-bottom: 12px;">'
+                    f'<div style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 12px;">ZONAS DE ALTA EVIDENCIA</div>'
+                    f'<div style="display: flex; align-items: baseline; gap: 14px;">'
+                    f'<span style="font-size: 40px; font-weight: 700; color: #ff4d8d; line-height: 1;">{c4}</span>'
+                    f'<div>'
+                    f'<div style="font-size: 15px; font-weight: 600; color: #f0f6fc; line-height: 1.2;">de {total_sub} subcircuitos</div>'
+                    f'<div style="font-size: 11px; color: #8b949e; margin-top: 3px;">{subtitulo_a}</div>'
+                    f'</div>'
+                    f'</div>'
+                    f'<div style="display: flex; width: 100%; height: 7px; border-radius: 0px; overflow: hidden; margin-top: 14px; background-color: #21262d;">'
+                    f'<div style="width: {pct4}%; background-color: #ff3d81;" title="Clase 4: {c4}"></div>'
+                    f'<div style="width: {pct3}%; background-color: #ff9e3d;" title="Clase 3: {c3}"></div>'
+                    f'<div style="width: {pct2}%; background-color: #7b5ea7;" title="Clase 2: {c2}"></div>'
+                    f'<div style="width: {pct1}%; background-color: #232b36;" title="Clase 1: {c1}"></div>'
+                    f'</div>'
+                    f'</div>'
+                )
+                st.markdown(html_card_a, unsafe_allow_html=True)
+                
+                # Tarjeta b) CLASES DE PROBABILIDAD (construida sin indentación de líneas)
+                rows_b_html = "".join([
+                    f'<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 12px;">'
+                    f'<div style="display: flex; align-items: center; gap: 10px; width: 105px;">'
+                    f'<span style="width: 18px; height: 14px; background-color: {COLOR_CLASE[cls_id]}; border-radius: 0px; display: inline-block;"></span>'
+                    f'<span style="color: #f0f6fc; font-weight: 500;">{cls_name}</span>'
+                    f'</div>'
+                    f'<span style="color: #8b949e; font-size: 11px; font-family: monospace; text-align: left; flex: 1; padding-left: 10px;">{cls_range}</span>'
+                    f'<span style="color: #f0f6fc; font-weight: 700; font-size: 13px; text-align: right; min-width: 30px;">{cls_count}</span>'
+                    f'</div>'
+                    for cls_id, cls_name, cls_range, cls_count in clases_info
+                ])
+                html_card_b = (
+                    f'<div style="background-color: #161b22; border: 1px solid #30363d; border-radius: 0px; padding: 16px 18px; margin-bottom: 12px;">'
+                    f'<div style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 14px;">{titulo_clases}</div>'
+                    f'{rows_b_html}'
+                    f'</div>'
+                )
+                st.markdown(html_card_b, unsafe_allow_html=True)
+                
+                # Tarjeta c) MAYOR RIESGO RELATIVO (NUTS) (construida sin indentación de líneas)
+                top7_df = gdf_map_bayes.sort_values('rr_mediana_nuts', ascending=False).head(7)
+                rr_max_scale = 9.0
+                rows_c_html = "".join([
+                    f'<div style="display: flex; align-items: center; margin-bottom: 8px; font-size: 12px;">'
+                    f'<span style="color: #8b949e; font-weight: 600; width: 14px; font-size: 11px;">{str(rank_idx) if rank_idx <= 5 else "&nbsp;"}</span>'
+                    f'<span style="color: #f0f6fc; font-weight: 500; font-size: 11.5px; width: 125px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{str(r["subcircuito_nom"]).title()}">{str(r["subcircuito_nom"]).title()}</span>'
+                    f'<span style="color: #ff4d8d; font-weight: 700; font-size: 12px; width: 34px; text-align: right; margin-right: 12px;">{float(r["rr_mediana_nuts"]):.2f}</span>'
+                    f'<div style="flex: 1; height: 14px; position: relative; min-width: 80px;">'
+                    f'<div style="position: absolute; top: 6px; left: 0; width: 100%; height: 2px; background-color: #30363d; border-radius: 1px;"></div>'
+                    f'<div style="position: absolute; top: 5px; left: {max(0.0, min(100.0, (float(r["rr_limite_inf_95_nuts"]) / rr_max_scale) * 100)):.1f}%; width: {max(2.0, min(100.0 - max(0.0, min(100.0, (float(r["rr_limite_inf_95_nuts"]) / rr_max_scale) * 100)), ((float(r["rr_limite_sup_95_nuts"]) - float(r["rr_limite_inf_95_nuts"])) / rr_max_scale) * 100)):.1f}%; height: 4px; background-color: #8b949e; border-radius: 2px;"></div>'
+                    f'<div style="position: absolute; top: 3px; left: calc({max(0.0, min(100.0, (float(r["rr_mediana_nuts"]) / rr_max_scale) * 100)):.1f}% - 4px); width: 8px; height: 8px; background-color: #ff4d8d; border: 1.5px solid #ffffff; border-radius: 50%;"></div>'
+                    f'</div>'
+                    f'</div>'
+                    for rank_idx, (_, r) in enumerate(top7_df.iterrows(), 1)
+                ])
+                
+                html_card_c = (
+                    f'<div style="background-color: #161b22; border: 1px solid #30363d; border-radius: 0px; padding: 16px 18px;">'
+                    f'<div style="font-size: 11px; font-weight: 700; color: #8b949e; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 12px;">MAYOR RIESGO RELATIVO (NUTS)</div>'
+                    f'{rows_c_html}'
+                    f'<div style="font-size: 10.5px; color: #8b949e; margin-top: 12px; border-top: 1px solid #21262d; padding-top: 8px;">Círculo: RR mediano · barra: intervalo de credibilidad 95 %</div>'
+                    f'</div>'
+                )
+                st.markdown(html_card_c, unsafe_allow_html=True)
+                
+            # 3. Nota al pie (2 líneas)
+            st.caption(r"NUTS: 2 cadenas, 1 000 muestras. Con ADVI las probabilidades se saturan en 1,00; por eso el mapa usa NUTS.")
+            st.caption(r"Cada círculo marca un subcircuito de las dos clases más altas; su tamaño crece con el RR mediano. RR = exp(φᵢ) / media espacial de exp(φ): riesgo frente al promedio de subcircuitos, a igual año y área.")
+            
+    # Pestaña 6: Resumen del Modelo
+    with subtab_resumen:
+        st.subheader("Tabla Resumen del Modelo Posterior (az.summary)")
+        if trace is None:
+            st.warning("⚠️ No se encontró la traza de inferencia bayesiana `pymc_trace.nc` para generar la tabla resumen.")
+        else:
             st.markdown("Estadísticas resumidas e intervalos de credibilidad del 94% (HDI) para los parámetros clave del modelo generadas a partir de 2,000 muestras variacionales (ADVI).")
             
             # Generar tabla interactiva
@@ -1611,13 +1634,13 @@ div[role="radiogroup"] label[data-checked="true"] {
             - **mcse_mean / mcse_sd:** Error estándar Monte Carlo de las 2,000 extracciones variacionales.
             - Para la comparación rigurosa con cadenas MCMC y el factor de reducción de escala $\\hat{R}$, consultar la **Pestaña 4: Validación ADVI vs. NUTS**.
             """)
-            
-            st.info("""
-            ⚠️ **Nota Metodológica sobre Dinámica Espacio-Temporal y Hotspots:**
-            El modelo de referencia posee una estructura puramente aditiva: $\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t=2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$.
-            Al no incluir un término de interacción espacio-temporal $\\delta_{it}$ (Knorr-Held, 2000), el riesgo relativo espacial de cada subcircuito es matemáticamente constante en el tiempo ($RR_{i, 2024} = RR_{i, 2025}$, ej. Guasmo 1 tiene 4.077 en ambos años).
-            Por lo tanto, la categoría de 'hotspot persistente' no refleja trayectorias locales dinámicas y se presenta formalmente en la tesis como una limitación metodológica del modelo aditivo.
-            """)
+        
+        st.info("""
+        ⚠️ **Nota Metodológica sobre Dinámica Espacio-Temporal y Hotspots:**
+        El modelo de referencia posee una estructura puramente aditiva: $\\log(\\mu_{it}) = \\alpha + \\beta_{\\text{year}} \\cdot \\mathbb{I}(t=2025) + \\beta_{\\text{area}} \\log(\\text{Area}_i) + \\phi_i$.
+        Al no incluir un término de interacción espacio-temporal $\\delta_{it}$ (Knorr-Held, 2000), el riesgo relativo espacial de cada subcircuito es matemáticamente constante en el tiempo ($RR_{i, 2024} = RR_{i, 2025}$, ej. Guasmo 1 tiene 4.077 en ambos años).
+        Por lo tanto, la categoría de 'hotspot persistente' no refleja trayectorias locales dinámicas y se presenta formalmente en la tesis como una limitación metodológica del modelo aditivo.
+        """)
 
 # ================= TAB 4: SIMULADOR TÁCTICO DE RIESGO =================
 with tab_sim:
